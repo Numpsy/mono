@@ -52,8 +52,14 @@ typedef struct {
 	gint32 age;
 } CodeviewDebugDirectory;
 
+typedef struct {
+	guint8 guid [20];
+	guint32 entry_point;
+	guint64 referenced_tables;
+} PdbStreamHeader;
+
 static gboolean
-get_pe_debug_guid (MonoImage *image, guint8 *out_guid, gint32 *out_age)
+get_pe_debug_guid (MonoImage *image, guint8 *out_guid, gint32 *out_age, gint32 *out_timestamp)
 {
 	MonoPEDirEntry *debug_dir_entry;
 	ImageDebugDirectory *debug_dir;
@@ -64,13 +70,14 @@ get_pe_debug_guid (MonoImage *image, guint8 *out_guid, gint32 *out_age)
 
 	int offset = mono_cli_rva_image_map (image, debug_dir_entry->rva);
 	debug_dir = (ImageDebugDirectory*)(image->raw_data + offset);
-	if (debug_dir->type == 2 && debug_dir->major_version == 1 && debug_dir->minor_version == 0x504d) {
+	if (debug_dir->type == 2 && debug_dir->major_version == 0x100 && debug_dir->minor_version == 0x504d) {
 		/* This is a 'CODEVIEW' debug directory */
 		CodeviewDebugDirectory *dir = (CodeviewDebugDirectory*)(image->raw_data + debug_dir->pointer);
 
 		if (dir->signature == 0x53445352) {
 			memcpy (out_guid, dir->guid, 16);
 			*out_age = dir->age;
+			*out_timestamp = debug_dir->time_date_stamp;
 			return TRUE;
 		}
 	}
@@ -86,6 +93,7 @@ mono_ppdb_load_file (MonoImage *image, const guint8 *raw_contents, int size)
 	MonoImageOpenStatus status;
 	guint8 pe_guid [16];
 	gint32 pe_age;
+	gint32 pe_timestamp;
 	MonoPPDBFile *ppdb;
 
 	if (raw_contents) {
@@ -112,8 +120,18 @@ mono_ppdb_load_file (MonoImage *image, const guint8 *raw_contents, int size)
 	 * The same id is stored in the Debug Directory of the PE file, and in the
 	 * #Pdb stream in the ppdb file.
 	 */
-	if (get_pe_debug_guid (image, pe_guid, &pe_age)) {
-		// FIXME: Read the id from the ppdb file
+	if (get_pe_debug_guid (image, pe_guid, &pe_age, &pe_timestamp)) {
+		PdbStreamHeader *pdb_stream = (PdbStreamHeader*)ppdb_image->heap_pdb.data;
+
+		g_assert (pdb_stream);
+
+		/* The pdb id is a concentation of the pe guid and the timestamp */
+		if (memcmp (pe_guid, pdb_stream->guid, 16) != 0 || memcmp (&pe_timestamp, pdb_stream->guid + 16, 4) != 0) {
+			g_warning ("Symbol file %s doesn't match image %s", ppdb_image->name,
+					   image->name);
+			mono_image_close (ppdb_image);
+			return NULL;
+		}
 	}
 
 	ppdb = g_new0 (MonoPPDBFile, 1);
@@ -243,9 +261,10 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 
 	mono_metadata_decode_row (&tables [MONO_TABLE_METHODBODY], idx-1, cols, MONO_METHODBODY_SIZE);
 
+	docidx = cols [MONO_METHODBODY_DOCUMENT];
+
 	// FIXME:
 	g_assert (cols [MONO_METHODBODY_SEQ_POINTS]);
-
 	ptr = mono_metadata_blob_heap (image, cols [MONO_METHODBODY_SEQ_POINTS]);
 	size = mono_metadata_decode_blob_size (ptr, &ptr);
 	end = ptr + size;
@@ -253,7 +272,8 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 	/* Header */
 	/* LocalSignature */
 	mono_metadata_decode_value (ptr, &ptr);
-	docidx = mono_metadata_decode_value (ptr, &ptr);
+	if (docidx == 0)
+		docidx = mono_metadata_decode_value (ptr, &ptr);
 	docname = get_docname (ppdb, image, docidx);
 
 	iloffset = 0;
@@ -288,7 +308,7 @@ mono_ppdb_lookup_location (MonoDebugMethodInfo *minfo, uint32_t offset)
 			start_line += adv_line;
 			start_col += adv_col;
 		}
-		first_non_hidden = TRUE;
+		first_non_hidden = FALSE;
 	}
 
 	location = g_new0 (MonoDebugSourceLocation, 1);
@@ -340,6 +360,8 @@ mono_ppdb_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrAr
 
 	mono_metadata_decode_row (&tables [MONO_TABLE_METHODBODY], method_idx-1, cols, MONO_METHODBODY_SIZE);
 
+	docidx = cols [MONO_METHODBODY_DOCUMENT];
+
 	if (!cols [MONO_METHODBODY_SEQ_POINTS])
 		return;
 
@@ -352,8 +374,10 @@ mono_ppdb_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrAr
 	/* Header */
 	/* LocalSignature */
 	mono_metadata_decode_value (ptr, &ptr);
-	docidx = mono_metadata_decode_value (ptr, &ptr);
+	if (docidx == 0)
+		docidx = mono_metadata_decode_value (ptr, &ptr);
 	docinfo = get_docinfo (ppdb, image, docidx);
+
 	if (sfiles)
 		g_ptr_array_add (sfiles, docinfo);
 
@@ -393,7 +417,7 @@ mono_ppdb_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrAr
 			start_line += adv_line;
 			start_col += adv_col;
 		}
-		first_non_hidden = TRUE;
+		first_non_hidden = FALSE;
 
 		memset (&sp, 0, sizeof (sp));
 		sp.il_offset = iloffset;

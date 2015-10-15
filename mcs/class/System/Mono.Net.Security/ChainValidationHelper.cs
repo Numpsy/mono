@@ -29,7 +29,7 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
-#if SECURITY_DEP && MARTIN_FIXME
+#if SECURITY_DEP
 
 #if MONO_SECURITY_ALIAS
 extern alias MonoSecurity;
@@ -162,6 +162,23 @@ namespace Mono.Net.Security
 			return helper;
 		}
 
+		[Obsolete]
+		internal ChainValidationHelper (HttpWebRequest request)
+		{
+			this.callbackWrapper = callbackWrapper;
+
+			this.request = request;
+			this.sender = request;
+
+			if (certValidationCallback == null)
+				certValidationCallback = request.ServerCertValidationCallback;
+			if (certSelectionCallback == null)
+				certSelectionCallback = new LocalCertSelectionCallback (DefaultSelectionCallback);
+
+			if (certValidationCallback == null)
+				certValidationCallback = ServicePointManager.ServerCertValidationCallback;
+		}
+
 		ChainValidationHelper (MonoTlsSettings settings, bool cloneSettings, MonoTlsStream stream, ServerCertValidationCallbackWrapper callbackWrapper)
 		{
 			if (cloneSettings)
@@ -189,7 +206,7 @@ namespace Mono.Net.Security
 				if (certValidationCallback == null)
 					certValidationCallback = request.ServerCertValidationCallback;
 				if (certSelectionCallback == null)
-					certSelectionCallback = new LocalCertSelectionCallback (stream.SelectClientCertificate);
+					certSelectionCallback = new LocalCertSelectionCallback (DefaultSelectionCallback);
 
 				if (settings == null)
 					fallbackToSPM = true;
@@ -197,6 +214,16 @@ namespace Mono.Net.Security
 
 			if (fallbackToSPM && certValidationCallback == null)
 				certValidationCallback = ServicePointManager.ServerCertValidationCallback;
+		}
+
+		static X509Certificate DefaultSelectionCallback (string targetHost, XX509CertificateCollection localCertificates, X509Certificate remoteCertificate, string[] acceptableIssuers)
+		{
+			X509Certificate clientCertificate;
+			if (localCertificates == null || localCertificates.Count == 0)
+				clientCertificate = null;
+			else
+				clientCertificate = localCertificates [0];
+			return clientCertificate;
 		}
 
 		public MonoTlsSettings Settings {

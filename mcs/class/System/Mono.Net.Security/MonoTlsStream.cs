@@ -82,7 +82,7 @@ namespace Mono.Net.Security
 			get; set;
 		}
 
-#if SECURITY_DEP && MARTIN_FIXME
+#if SECURITY_DEP
 		readonly ChainValidationHelper validationHelper;
 		readonly MonoTlsSettings settings;
 
@@ -99,16 +99,6 @@ namespace Mono.Net.Security
 				settings = new MonoTlsSettings ();
 
 			validationHelper = ChainValidationHelper.Create (ref settings, this);
-		}
-
-		internal X509Certificate SelectClientCertificate (string targetHost, XX509CertificateCollection localCertificates, X509Certificate remoteCertificate, string[] acceptableIssuers)
-		{
-			X509Certificate clientCertificate;
-			if (localCertificates == null || localCertificates.Count == 0)
-				clientCertificate = null;
-			else
-				clientCertificate = localCertificates [0];
-			return clientCertificate;
 		}
 
 		internal Stream CreateStream (byte[] buffer)

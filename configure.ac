@@ -1077,6 +1077,12 @@ AC_CHECK_FUNCS(sigaction)
 AC_CHECK_FUNCS(kill)
 AC_CHECK_FUNCS(signal)
 
+# signal() is declared inline in Android headers
+# so we need to workaround it by overriding the check.
+if test x$platform_android = xyes; then
+	AC_DEFINE(HAVE_SIGNAL,1)
+fi
+
 if test x$host_win32 = xno; then
 
 	dnl hires monotonic clock support
@@ -2612,7 +2618,13 @@ if test "x$enable_llvm" = "xyes"; then
    else
       LLVM_LIBS=`$LLVM_CONFIG --libs analysis core bitwriter jit mcjit $llvm_codegen`
    fi
-   LLVM_LIBS="$LLVM_LIBS $LLVM_LDFLAGS $LLVM_SYSTEM_LIBS -lstdc++"
+   LLVM_LIBS="$LLVM_LIBS $LLVM_LDFLAGS $LLVM_SYSTEM_LIBS"
+   # The c++ standard library used by llvm doesn't show up in $LLVM_SYSTEM_LIBS so add it manually
+   if echo $LLVM_CXXFLAGS | grep -q -- '-stdlib=libc++'; then
+      LLVM_LIBS="$LLVM_LIBS -lc++"
+   else
+      LLVM_LIBS="$LLVM_LIBS -lstdc++"
+   fi
 
    expected_llvm_version="3.4svn-mono-mono/e656cac"
 
