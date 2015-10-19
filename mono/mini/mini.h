@@ -35,8 +35,6 @@
 #include <mono/utils/mono-conc-hashtable.h>
 #include <mono/utils/mono-signal-handler.h>
 
-#define MONO_BREAKPOINT_ARRAY_SIZE 64
-
 #include "mini-arch.h"
 #include "regalloc.h"
 #include "mini-unwind.h"
@@ -113,7 +111,7 @@
 #endif
 
 /* Version number of the AOT file format */
-#define MONO_AOT_FILE_VERSION 123
+#define MONO_AOT_FILE_VERSION 124
 
 //TODO: This is x86/amd64 specific.
 #define mono_simd_shuffle_mask(a,b,c,d) ((a) | ((b) << 2) | ((c) << 4) | ((d) << 6))
@@ -337,6 +335,12 @@ typedef struct {
 	MonoJitInfo *ji;
 	MonoCodeManager *code_mp;
 } MonoJitDynamicMethodInfo;
+
+/* An extension of MonoGenericParamFull used in generic sharing */
+typedef struct {
+	MonoGenericParamFull param;
+	MonoGenericParam *parent;
+} MonoGSharedGenericParam;
 
 #define domain_jit_info(domain) ((MonoJitDomainInfo*)((domain)->runtime_info))
 
@@ -1369,6 +1373,32 @@ enum {
 	MONO_OPT_LAST
 };
 
+/*
+ * This structure represents a JIT backend.
+ */
+typedef struct {
+	guint            have_card_table_wb : 1;
+	guint            have_op_generic_class_init : 1;
+	guint            emulate_mul_div : 1;
+	guint            emulate_div : 1;
+	guint            emulate_long_shift_opts : 1;
+	guint            have_objc_get_selector : 1;
+	guint            have_generalized_imt_thunk : 1;
+	guint            have_tls_get : 1;
+	guint            have_tls_get_reg : 1;
+	guint            have_liverange_ops: 1;
+	guint            have_op_tail_call : 1;
+	guint            have_dummy_init : 1;
+	guint            gshared_supported : 1;
+	guint            use_fpstack : 1;
+	guint            ilp32 : 1;
+	guint            need_got_var : 1;
+	guint            need_div_check : 1;
+	guint            no_unaligned_access : 1;
+	int              monitor_enter_adjustment;
+	int              dyn_call_param_area;
+} MonoBackend;
+
 /* Flags for mini_method_compile () */
 typedef enum {
 	/* Whenever to run cctors during JITting */
@@ -1449,6 +1479,8 @@ typedef struct {
 	MonoMethod      *current_method; /* The method currently processed by method_to_ir () */
 	MonoMethod      *method_to_register; /* The method to register in JIT info tables */
 	MonoGenericContext *generic_context;
+
+	MonoBackend *backend;
 
 	/* 
 	 * This variable represents the hidden argument holding the vtype
@@ -2883,6 +2915,7 @@ MonoType* mini_type_get_underlying_type (MonoType *type);
 MonoMethod* mini_get_shared_method (MonoMethod *method);
 MonoMethod* mini_get_shared_method_to_register (MonoMethod *method);
 MonoMethod* mini_get_shared_method_full (MonoMethod *method, gboolean all_vt, gboolean is_gsharedvt);
+MonoType* mini_get_shared_gparam (MonoType *t, MonoType *constraint);
 int mini_get_rgctx_entry_slot (MonoJumpInfoRgctxEntry *entry);
 
 int mini_type_stack_size (MonoType *t, int *align);
@@ -3003,34 +3036,8 @@ void MONO_SIG_HANDLER_SIGNATURE (mono_sigsegv_signal_handler);
 void MONO_SIG_HANDLER_SIGNATURE (mono_sigint_signal_handler) ;
 gboolean MONO_SIG_HANDLER_SIGNATURE (mono_chain_signal);
 
-#ifdef MONO_ARCH_HAVE_OP_TAIL_CALL
-#define ARCH_HAVE_OP_TAIL_CALL 1
-#else
-#define ARCH_HAVE_OP_TAIL_CALL 0
-#endif
-
 #ifndef MONO_ARCH_HAVE_TLS_GET
 #define MONO_ARCH_HAVE_TLS_GET 0
-#endif
-
-#ifdef MONO_ARCH_HAVE_TLS_GET_REG
-#define ARCH_HAVE_TLS_GET_REG 1
-#else
-#define ARCH_HAVE_TLS_GET_REG 0
-#endif
-
-#ifdef MONO_ARCH_EMULATE_MUL_DIV
-#define ARCH_EMULATE_MUL_DIV 1
-#else
-#define ARCH_EMULATE_MUL_DIV 0
-#endif
-
-#ifndef MONO_ARCH_MONITOR_ENTER_ADJUSTMENT
-#define MONO_ARCH_MONITOR_ENTER_ADJUSTMENT 1
-#endif
-
-#ifndef MONO_ARCH_DYN_CALL_PARAM_AREA
-#define MONO_ARCH_DYN_CALL_PARAM_AREA 0
 #endif
 
 #ifdef MONO_ARCH_VARARG_ICALLS
@@ -3039,22 +3046,10 @@ gboolean MONO_SIG_HANDLER_SIGNATURE (mono_chain_signal);
 #define ARCH_VARARG_ICALLS 0
 #endif
 
-#ifdef MONO_ARCH_HAVE_DUMMY_INIT
-#define ARCH_HAVE_DUMMY_INIT 1
-#else
-#define ARCH_HAVE_DUMMY_INIT 0
-#endif
-
 #ifdef MONO_CROSS_COMPILE
 #define MONO_IS_CROSS_COMPILE 1
 #else
 #define MONO_IS_CROSS_COMPILE 0
-#endif
-
-#if defined(__mono_ilp32__)
-#define MONO_IS_ILP32 1
-#else
-#define MONO_IS_ILP32 0
 #endif
 
 #endif /* __MONO_MINI_H__ */
