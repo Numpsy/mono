@@ -4,6 +4,9 @@ check-local: assemblyresolve/test/asm.dll testjit test-generic-sharing test-type
 check-full: test-sgen check-local
 check-parallel: compile-tests check-full
 
+check-coreclr:
+	$(MAKE) -C $(mono_build_root)/acceptance-tests check-coreclr
+
 # for backwards compatibility on Wrench
 test-wrench: check-parallel
 
@@ -1309,7 +1312,7 @@ test-generic-sharing-normal: $(GSHARED_TESTS)
 	done
 
 test-generic-sharing-managed: test-runner.exe $(GSHARED_TESTS)
-	@$(RUNTIME) ./test-runner.exe -j a --opt-sets "gshared gshared,shared gshared,-inline gshared,-inline,shared" $(GSHARED_TESTS)
+	@$(RUNTIME) ./test-runner.exe -j a --testsuite-name "gshared" --opt-sets "gshared gshared,shared gshared,-inline gshared,-inline,shared" $(GSHARED_TESTS)
 
 if NACL_CODEGEN
 test-generic-sharing:
