@@ -134,7 +134,9 @@ mono_threads_add_to_pending_operation_set (MonoThreadInfo* info)
 void
 mono_threads_begin_global_suspend (void)
 {
-	g_assert (pending_suspends == 0);
+	size_t ps = pending_suspends;
+	if (G_UNLIKELY (ps != 0))
+		g_error ("pending_suspends = %d, but must be 0", ps);
 	THREADS_SUSPEND_DEBUG ("------ BEGIN GLOBAL OP sp %d rp %d ap %d wd %d po %d (sp + rp + ap == wd) (wd == po)\n", suspend_posts, resume_posts,
 		abort_posts, waits_done, pending_ops);
 	g_assert ((suspend_posts + resume_posts + abort_posts) == waits_done);
@@ -144,7 +146,9 @@ mono_threads_begin_global_suspend (void)
 void
 mono_threads_end_global_suspend (void) 
 {
-	g_assert (pending_suspends == 0);
+	size_t ps = pending_suspends;
+	if (G_UNLIKELY (ps != 0))
+		g_error ("pending_suspends = %d, but must be 0", ps);
 	THREADS_SUSPEND_DEBUG ("------ END GLOBAL OP sp %d rp %d ap %d wd %d po %d\n", suspend_posts, resume_posts,
 		abort_posts, waits_done, pending_ops);
 	g_assert ((suspend_posts + resume_posts + abort_posts) == waits_done);
@@ -1006,16 +1010,16 @@ mono_thread_info_suspend_unlock (void)
  * facility.
  */
 void
-mono_thread_info_abort_socket_syscall_for_close (MonoNativeThreadId tid)
+mono_thread_info_abort_socket_syscall_for_close (MonoThreadInfo *info)
 {
 	MonoThreadHazardPointers *hp;
-	MonoThreadInfo *info;
-	
-	if (tid == mono_native_thread_id_get () || !mono_threads_core_needs_abort_syscall ())
+
+	g_assert (info);
+
+	if (info == mono_thread_info_current () || !mono_threads_core_needs_abort_syscall ())
 		return;
 
-	hp = mono_hazard_pointer_get ();	
-	info = mono_thread_info_lookup (tid); /*info on HP1*/
+	hp = mono_hazard_pointer_get ();
 	if (!info)
 		return;
 
