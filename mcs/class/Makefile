@@ -53,6 +53,7 @@ mobile_common_dirs := \
 	Mono.CSharp	\
 	Microsoft.CSharp \
 	Mono.Security.Providers.DotNet	\
+	Mono.Security.Providers.OldTls \
 	Mono.Security.Providers.NewSystemSource
 
 mobile_static_dirs := \
@@ -127,6 +128,7 @@ xammac_4_5_dirs := \
 	System.Data.Linq		\
 	System.Net.Http \
 	Mono.Security.Providers.DotNet \
+	Mono.Security.Providers.OldTls \
 	Mono.Security.Providers.NewSystemSource \
 	$(pcl_facade_dirs)
 
@@ -256,6 +258,7 @@ net_4_x_parallel_dirs := \
 	System.Windows \
 	System.Xml.Serialization \
 	Mono.Security.Providers.DotNet \
+	Mono.Security.Providers.OldTls \
 	Mono.Security.Providers.NewSystemSource \
 	System.DirectoryServices.Protocols	\
 	RabbitMQ.Client			\

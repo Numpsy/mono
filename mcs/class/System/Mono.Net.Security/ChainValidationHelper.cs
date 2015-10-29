@@ -115,6 +115,8 @@ namespace Mono.Net.Security
 
 		internal static ICertificateValidator GetDefaultValidator (MonoTlsSettings settings)
 		{
+			if (settings == null)
+				return new ChainValidationHelper (null, false, null, null);
 			if (settings.CertificateValidator == null)
 				settings.CertificateValidator = new ChainValidationHelper (settings, false, null, null);
 			return settings.CertificateValidator;
@@ -174,8 +176,8 @@ namespace Mono.Net.Security
 			var fallbackToSPM = false;
 
 			if (settings != null) {
-				if (settings.ServerCertificateValidationCallback != null) {
-					var callback = Private.CallbackHelpers.MonoToPublic (settings.ServerCertificateValidationCallback);
+				if (settings.RemoteCertificateValidationCallback != null) {
+					var callback = Private.CallbackHelpers.MonoToPublic (settings.RemoteCertificateValidationCallback);
 					certValidationCallback = new ServerCertValidationCallback (callback);
 				}
 				certSelectionCallback = Private.CallbackHelpers.MonoToInternal (settings.ClientCertificateSelectionCallback);
@@ -264,7 +266,7 @@ namespace Mono.Net.Security
 		public ValidationResult ValidateClientCertificate (XX509CertificateCollection certs)
 		{
 			var certs2 = Convert (certs);
-			return ValidateChain (null, certs2, 0);
+			return ValidateChain (string.Empty, certs2, 0);
 		}
 
 		public ValidationResult ValidateChain (string host, XX509CertificateCollection certs)

@@ -615,8 +615,8 @@ static void
 emit_time (LogBuffer *logbuffer, uint64_t value)
 {
 	uint64_t tdiff = value - logbuffer->last_time;
-	if (value < logbuffer->last_time)
-		printf ("time went backwards\n");
+	//if (value < logbuffer->last_time)
+	//	printf ("time went backwards\n");
 	//if (tdiff > 1000000)
 	//	printf ("large time offset: %llu\n", tdiff);
 	encode_uleb128 (tdiff, logbuffer->data, &logbuffer->data);
@@ -4738,7 +4738,7 @@ mono_profiler_startup (const char *desc)
 	mono_profiler_install_context (context_loaded, context_unloaded);
 	mono_profiler_install_class (NULL, class_loaded, NULL, class_unloaded);
 	mono_profiler_install_module (NULL, image_loaded, NULL, image_unloaded);
-	mono_profiler_install_assembly (NULL, assembly_loaded, NULL, assembly_unloaded);
+	mono_profiler_install_assembly (NULL, assembly_loaded, assembly_unloaded, NULL);
 	mono_profiler_install_thread (thread_start, thread_end);
 	mono_profiler_install_thread_name (thread_name);
 	mono_profiler_install_enter_leave (method_enter, method_leave);

@@ -42,6 +42,10 @@
 #include <sys/prctl.h>
 #endif
 
+#ifdef HAVE_UNWIND_H
+#include <unwind.h>
+#endif
+
 #include <mono/metadata/appdomain.h>
 #include <mono/metadata/tabledefs.h>
 #include <mono/metadata/threads.h>
@@ -126,14 +130,10 @@ mono_exceptions_init (void)
 	cbs.mono_walk_stack_with_ctx = mono_runtime_walk_stack_with_ctx;
 	cbs.mono_walk_stack_with_state = mono_walk_stack_with_state;
 
-#if defined(ENABLE_LLVM) && !defined(MONO_LLVM_LOADED)
 	if (mono_llvm_only)
 		cbs.mono_raise_exception = mono_llvm_raise_exception;
 	else
 		cbs.mono_raise_exception = mono_get_throw_exception ();
-#else
-		cbs.mono_raise_exception = mono_get_throw_exception ();
-#endif
 	cbs.mono_raise_exception_with_ctx = mono_raise_exception_with_ctx;
 	cbs.mono_exception_walk_trace = mono_exception_walk_trace;
 	cbs.mono_install_handler_block_guard = mono_install_handler_block_guard;
@@ -2717,6 +2717,8 @@ mono_jinfo_get_epilog_size (MonoJitInfo *ji)
  * LLVM/Bitcode exception handling.
  */
 
+#ifdef MONO_ARCH_HAVE_UNWIND_BACKTRACE
+
 #if 0
 static gboolean show_native_addresses = TRUE;
 #else
@@ -2737,6 +2739,8 @@ build_stack_trace (struct _Unwind_Context *frame_ctx, void *state)
 	return _URC_NO_REASON;
 }
 
+#endif
+
 static void
 throw_exception (MonoObject *ex, gboolean rethrow)
 {
@@ -2752,10 +2756,10 @@ throw_exception (MonoObject *ex, gboolean rethrow)
 	jit_tls->thrown_exc = mono_gchandle_new ((MonoObject*)mono_ex, FALSE);
 
 	if (!rethrow) {
+#ifdef MONO_ARCH_HAVE_UNWIND_BACKTRACE
 		GList *l, *ips = NULL;
 		GList *trace;
 
-		// FIXME: Move this to mini-exceptions.c
 		_Unwind_Backtrace (build_stack_trace, &ips);
 		/* The list contains gshared info-ip pairs */
 		trace = NULL;
@@ -2768,6 +2772,7 @@ throw_exception (MonoObject *ex, gboolean rethrow)
 		MONO_OBJECT_SETREF (mono_ex, trace_ips, mono_glist_to_array (trace, mono_defaults.int_class));
 		g_list_free (l);
 		g_list_free (trace);
+#endif
 	}
 
 	mono_llvm_cpp_throw_exception ();
@@ -2899,9 +2904,11 @@ mono_llvm_match_exception (MonoJitInfo *jinfo, guint32 region_start, guint32 reg
 	return index;
 }
 
+#ifdef ENABLE_LLVM
 _Unwind_Reason_Code 
 mono_debug_personality (int a, _Unwind_Action b,
 uint64_t c, struct _Unwind_Exception *d, struct _Unwind_Context *e)
 {
 	g_assert_not_reached ();
 }
+#endif

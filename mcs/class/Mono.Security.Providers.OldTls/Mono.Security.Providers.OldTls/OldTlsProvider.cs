@@ -1,5 +1,5 @@
 //
-// MonoDefaultTlsProvider.cs
+// OldTlsProvider.cs
 //
 // Author:
 //       Martin Baulig <martin.baulig@xamarin.com>
@@ -30,15 +30,11 @@ using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using Mono.Security.Interface;
+using Mono.Net.Security;
 
-namespace Mono.Security.Providers.DotNet
+namespace Mono.Security.Providers.OldTls
 {
-	/*
-	 * This provider only uses the public .NET APIs from System.dll.
-	 * 
-	 * It is primarily intended for testing.
-	 */
-	public class DotNetTlsProvider : MonoTlsProvider
+	public class OldTlsProvider : MonoTlsProvider
 	{
 		public override bool SupportsSslStream {
 			get { return true; }
@@ -53,25 +49,15 @@ namespace Mono.Security.Providers.DotNet
 		}
 
 		public override SslProtocols SupportedProtocols {
-			get { return (SslProtocols)ServicePointManager.SecurityProtocol; }
+			get { return SslProtocols.Tls; }
 		}
 
 		public override MonoSslStream CreateSslStream (
 			Stream innerStream, bool leaveInnerStreamOpen,
 			MonoTlsSettings settings = null)
 		{
-			if (settings != null)
-				throw new NotSupportedException ("Mono-specific API Extensions not available.");
-
-			RemoteCertificateValidationCallback validation_callback = null;
-			LocalCertificateSelectionCallback selection_callback = null;
-
-			if (settings != null) {
-				validation_callback = ConvertCallback (settings.RemoteCertificateValidationCallback);
-				selection_callback = ConvertCallback (settings.ClientCertificateSelectionCallback);
-			}
-
-			return new DotNetSslStreamImpl (innerStream, leaveInnerStreamOpen, validation_callback, selection_callback);
+			var impl = new LegacySslStream (innerStream, leaveInnerStreamOpen, settings);
+			return new MonoSslStreamImpl (impl);
 		}
 
 		public override IMonoTlsContext CreateTlsContext (
@@ -82,23 +68,6 @@ namespace Mono.Security.Providers.DotNet
 		{
 			throw new NotSupportedException ();
 		}
-
-		internal static RemoteCertificateValidationCallback ConvertCallback (MonoRemoteCertificateValidationCallback callback)
-		{
-			if (callback == null)
-				return null;
-
-			return (s, c, ch, e) => callback (null, c, ch, (MonoSslPolicyErrors)e);
-		}
-
-		internal static LocalCertificateSelectionCallback ConvertCallback (MonoLocalCertificateSelectionCallback callback)
-		{
-			if (callback == null)
-				return null;
-
-			return (s, t, lc, rc, ai) => callback (t, lc, rc, ai);
-		}
-
 	}
 }
 
