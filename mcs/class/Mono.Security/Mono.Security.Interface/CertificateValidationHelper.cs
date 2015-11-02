@@ -94,22 +94,29 @@ namespace Mono.Security.Interface
 
 		ValidationResult ValidateClientCertificate (X509CertificateCollection certificates);
 	}
-	#endif
 
-	#if !INSIDE_SYSTEM
-	public
-	#endif
-	static class CertificateValidationHelper
+	public static class CertificateValidationHelper
 	{
 		const string SecurityLibrary = "/System/Library/Frameworks/Security.framework/Security";
 		static readonly bool noX509Chain;
+		static readonly bool supportsTrustAnchors;
 
 		static CertificateValidationHelper ()
 		{
 			#if MONOTOUCH || XAMMAC
 			noX509Chain = true;
+			supportsTrustAnchors = true;
+			#elif MONODROID
+			noX509Chain = true;
+			supportsTrustAnchors = false;
 			#else
-			noX509Chain = File.Exists (SecurityLibrary);
+			if (File.Exists (SecurityLibrary)) {
+				noX509Chain = true;
+				supportsTrustAnchors = true;
+			} else {
+				noX509Chain = false;
+				supportsTrustAnchors = false;
+			}
 			#endif
 		}
 
@@ -117,16 +124,19 @@ namespace Mono.Security.Interface
 			get { return !noX509Chain; }
 		}
 
+		public static bool SupportsTrustAnchors {
+			get { return supportsTrustAnchors; }
+		}
+
 		internal static ICertificateValidator GetDefaultValidator (MonoTlsSettings settings)
 		{
 			return (ICertificateValidator)NoReflectionHelper.GetDefaultCertificateValidator (settings);
 		}
 
-		#if !INSIDE_SYSTEM
 		public static ICertificateValidator GetValidator (MonoTlsSettings settings)
 		{
 			return GetDefaultValidator (settings);
 		}
-		#endif
 	}
+#endif
 }

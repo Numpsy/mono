@@ -240,17 +240,6 @@ namespace Mono.Net.Security
 			return result.Trusted && !result.UserDenied;
 		}
 
-		static XX509CertificateCollection Convert (MSX.X509CertificateCollection certificates)
-		{
-			if (certificates == null)
-				return null;
-
-			var certs2 = new XX509CertificateCollection ();
-			for (int i = 0; i < certificates.Count; i++)
-				certs2.Add (new X509Certificate2 (certificates [i].RawData));
-			return certs2;
-		}
-
 		internal static SystemCertificateValidator GetSystemCertificateValidator ()
 		{
 			return new SystemCertificateValidator ();
@@ -275,21 +264,6 @@ namespace Mono.Net.Security
 			}
 		}
 
-		internal ValidationResult ValidateChain (string host, MSX.X509CertificateCollection certs)
-		{
-			try {
-				var certs2 = Convert (certs);
-				var result = ValidateChain (host, certs2, 0);
-				if (tlsStream != null)
-					tlsStream.CertificateValidationFailed = result == null || !result.Trusted || result.UserDenied;
-				return result;
-			} catch {
-				if (tlsStream != null)
-					tlsStream.CertificateValidationFailed = true;
-				throw;
-			}
-		}
-
 		ValidationResult ValidateChain (string host, XX509CertificateCollection certs, SslPolicyErrors errors)
 		{
 			// user_denied is true if the user callback is called and returns false
@@ -297,6 +271,7 @@ namespace Mono.Net.Security
 			bool result = false;
 
 			var hasCallback = certValidationCallback != null || callbackWrapper != null;
+			var anchors = settings != null ? settings.TrustAnchors : null;
 
 			var systemValidator = GetSystemCertificateValidator ();
 
@@ -345,7 +320,7 @@ namespace Mono.Net.Security
 			systemValidator.CheckUsage (certs, host, ref errors, ref status11);
 
 			if (!skipSystemValidators)
-				result = systemValidator.EvaluateSystem (certs, host, chain, ref errors, ref status11);
+				result = systemValidator.EvaluateSystem (certs, anchors, host, chain, ref errors, ref status11);
 
 			if (policy != null && (!(policy is DefaultCertificatePolicy) || certValidationCallback == null)) {
 				ServicePoint sp = null;
