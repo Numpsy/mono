@@ -2239,7 +2239,16 @@ mono_arch_get_llvm_call_info (MonoCompile *cfg, MonoMethodSignature *sig)
 	 * - we only pass/receive them in registers in some cases, and only 
 	 *   in 1 or 2 integer registers.
 	 */
-	if (cinfo->ret.storage == ArgValuetypeInReg) {
+	switch (cinfo->ret.storage) {
+	case ArgNone:
+		linfo->ret.storage = LLVMArgNone;
+		break;
+	case ArgInIReg:
+	case ArgInFloatSSEReg:
+	case ArgInDoubleSSEReg:
+		linfo->ret.storage = LLVMArgNormal;
+		break;
+	case ArgValuetypeInReg:
 		if (sig->pinvoke) {
 			cfg->exception_message = g_strdup ("pinvoke + vtypes");
 			cfg->disable_llvm = TRUE;
@@ -2249,12 +2258,15 @@ mono_arch_get_llvm_call_info (MonoCompile *cfg, MonoMethodSignature *sig)
 		linfo->ret.storage = LLVMArgVtypeInReg;
 		for (j = 0; j < 2; ++j)
 			linfo->ret.pair_storage [j] = arg_storage_to_llvm_arg_storage (cfg, cinfo->ret.pair_storage [j]);
-	}
-
-	if (cinfo->ret.storage == ArgValuetypeAddrInIReg) {
+		break;
+	case ArgValuetypeAddrInIReg:
 		/* Vtype returned using a hidden argument */
 		linfo->ret.storage = LLVMArgVtypeRetAddr;
 		linfo->vret_arg_index = cinfo->vret_arg_index;
+		break;
+	default:
+		g_assert_not_reached ();
+		break;
 	}
 
 	for (i = 0; i < n; ++i) {
@@ -2269,24 +2281,17 @@ mono_arch_get_llvm_call_info (MonoCompile *cfg, MonoMethodSignature *sig)
 
 		switch (ainfo->storage) {
 		case ArgInIReg:
-			linfo->args [i].storage = LLVMArgInIReg;
+			linfo->args [i].storage = LLVMArgNormal;
 			break;
 		case ArgInDoubleSSEReg:
 		case ArgInFloatSSEReg:
-			linfo->args [i].storage = LLVMArgInFPReg;
+			linfo->args [i].storage = LLVMArgNormal;
 			break;
 		case ArgOnStack:
-			if (MONO_TYPE_ISSTRUCT (t)) {
+			if (MONO_TYPE_ISSTRUCT (t))
 				linfo->args [i].storage = LLVMArgVtypeByVal;
-			} else {
-				linfo->args [i].storage = LLVMArgInIReg;
-				if (!t->byref) {
-					if (t->type == MONO_TYPE_R4)
-						linfo->args [i].storage = LLVMArgInFPReg;
-					else if (t->type == MONO_TYPE_R8)
-						linfo->args [i].storage = LLVMArgInFPReg;
-				}
-			}
+			else
+				linfo->args [i].storage = LLVMArgNormal;
 			break;
 		case ArgValuetypeInReg:
 			if (sig->pinvoke) {
@@ -3658,6 +3663,35 @@ mono_amd64_have_tls_get (void)
 		       ins [9] == 0xc3;
 
 	tls_gs_offset = ins[5];
+
+	/*
+	 * Apple now loads a different version of pthread_getspecific when launched from Xcode
+	 * For that version we're looking for these instructions:
+	 *
+	 * pushq  %rbp
+	 * movq   %rsp, %rbp
+	 * mov    %gs:[offset](,%rdi,8),%rax
+	 * popq   %rbp
+	 * retq
+	 */
+	if (!have_tls_get) {
+		have_tls_get = ins [0] == 0x55 &&
+			       ins [1] == 0x48 &&
+			       ins [2] == 0x89 &&
+			       ins [3] == 0xe5 &&
+			       ins [4] == 0x65 &&
+			       ins [5] == 0x48 &&
+			       ins [6] == 0x8b &&
+			       ins [7] == 0x04 &&
+			       ins [8] == 0xfd &&
+			       ins [10] == 0x00 &&
+			       ins [11] == 0x00 &&
+			       ins [12] == 0x00 &&
+			       ins [13] == 0x5d &&
+			       ins [14] == 0xc3;
+
+		tls_gs_offset = ins[9];
+	}
 #endif
 
 	inited = TRUE;

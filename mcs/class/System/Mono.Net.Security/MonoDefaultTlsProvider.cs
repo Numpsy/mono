@@ -43,10 +43,8 @@ using XX509CertificateCollection = System.Security.Cryptography.X509Certificates
 
 #if MONO_SECURITY_ALIAS
 using MonoSecurity::Mono.Security.Interface;
-using MonoSecurity::Mono.Security.Protocol.Tls;
 #else
 using Mono.Security.Interface;
-using Mono.Security.Protocol.Tls;
 #endif
 
 using System;
@@ -86,7 +84,7 @@ namespace Mono.Net.Security.Private
 			Stream innerStream, bool leaveInnerStreamOpen,
 			MonoTlsSettings settings)
 		{
-			return new LegacySslStream (innerStream, leaveInnerStreamOpen, settings);
+			return new LegacySslStream (innerStream, leaveInnerStreamOpen, this, settings);
 		}
 
 		protected override IMonoTlsContext CreateTlsContextImpl (

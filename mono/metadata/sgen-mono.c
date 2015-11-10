@@ -220,12 +220,14 @@ emit_nursery_check (MonoMethodBuilder *mb, int *nursery_check_return_labels, gbo
 	 */
 	mono_mb_emit_byte (mb, MONO_CUSTOM_PREFIX);
 	mono_mb_emit_byte (mb, CEE_MONO_LDPTR_NURSERY_START);
-	mono_mb_emit_icon (mb, DEFAULT_NURSERY_BITS);
+	mono_mb_emit_byte (mb, MONO_CUSTOM_PREFIX);
+	mono_mb_emit_byte (mb, CEE_MONO_LDPTR_NURSERY_BITS);
 	mono_mb_emit_byte (mb, CEE_SHR_UN);
 	mono_mb_emit_stloc (mb, shifted_nursery_start);
 
 	mono_mb_emit_ldarg (mb, 0);
-	mono_mb_emit_icon (mb, DEFAULT_NURSERY_BITS);
+	mono_mb_emit_byte (mb, MONO_CUSTOM_PREFIX);
+	mono_mb_emit_byte (mb, CEE_MONO_LDPTR_NURSERY_BITS);
 	mono_mb_emit_byte (mb, CEE_SHR_UN);
 	mono_mb_emit_ldloc (mb, shifted_nursery_start);
 	nursery_check_return_labels [0] = mono_mb_emit_branch (mb, CEE_BEQ);
@@ -234,7 +236,8 @@ emit_nursery_check (MonoMethodBuilder *mb, int *nursery_check_return_labels, gbo
 		// if (!ptr_in_nursery (*ptr)) return;
 		mono_mb_emit_ldarg (mb, 0);
 		mono_mb_emit_byte (mb, CEE_LDIND_I);
-		mono_mb_emit_icon (mb, DEFAULT_NURSERY_BITS);
+		mono_mb_emit_byte (mb, MONO_CUSTOM_PREFIX);
+		mono_mb_emit_byte (mb, CEE_MONO_LDPTR_NURSERY_BITS);
 		mono_mb_emit_byte (mb, CEE_SHR_UN);
 		mono_mb_emit_ldloc (mb, shifted_nursery_start);
 		nursery_check_return_labels [1] = mono_mb_emit_branch (mb, CEE_BNE_UN);
@@ -249,6 +252,7 @@ mono_gc_get_specific_write_barrier (gboolean is_concurrent)
 	MonoMethodBuilder *mb;
 	MonoMethodSignature *sig;
 	MonoMethod **write_barrier_method_addr;
+	WrapperInfo *info;
 #ifdef MANAGED_WBARRIER
 	int i, nursery_check_labels [2];
 #endif
@@ -327,6 +331,10 @@ mono_gc_get_specific_write_barrier (gboolean is_concurrent)
 #endif
 #endif
 	res = mono_mb_create_method (mb, sig, 16);
+	info = mono_wrapper_info_create (mb, WRAPPER_SUBTYPE_NONE);
+	/* The generated barrier depends on this being the same at runtime */
+	info->d.wbarrier.nursery_bits = DEFAULT_NURSERY_BITS;
+	mono_marshal_set_wrapper_info (res, info);
 	mono_mb_free (mb);
 
 	LOCK_GC;
@@ -1052,7 +1060,7 @@ create_allocator (int atype, gboolean slowpath)
 	static gboolean registered = FALSE;
 	int tlab_next_addr_var, new_next_var;
 	const char *name = NULL;
-	AllocatorWrapperInfo *info;
+	WrapperInfo *info;
 	int num_params, i;
 
 	if (!registered) {
@@ -1376,16 +1384,16 @@ create_allocator (int atype, gboolean slowpath)
 	mono_mb_emit_byte (mb, CEE_RET);
 #endif
 
-	res = mono_mb_create_method (mb, csig, 8);
+	info = mono_wrapper_info_create (mb, WRAPPER_SUBTYPE_NONE);
+	info->d.alloc.gc_name = "sgen";
+	info->d.alloc.alloc_type = atype;
+
+	res = mono_mb_create (mb, csig, 8, info);
 	mono_mb_free (mb);
 #ifndef DISABLE_JIT
 	mono_method_get_header (res)->init_locals = FALSE;
 #endif
 
-	info = mono_image_alloc0 (mono_defaults.corlib, sizeof (AllocatorWrapperInfo));
-	info->gc_name = "sgen";
-	info->alloc_type = atype;
-	mono_marshal_set_wrapper_info (res, info);
 
 	return res;
 }
@@ -2911,7 +2919,11 @@ sgen_client_handle_gc_debug (const char *opt)
 	if (!strcmp (opt, "xdomain-checks")) {
 		sgen_mono_xdomain_checks = TRUE;
 	} else if (!strcmp (opt, "do-not-finalize")) {
-		do_not_finalize = TRUE;
+		mono_do_not_finalize = TRUE;
+	} else if (g_str_has_prefix (opt, "do-not-finalize=")) {
+		opt = strchr (opt, '=') + 1;
+		mono_do_not_finalize = TRUE;
+		mono_do_not_finalize_class_names = g_strsplit (opt, ",", 0);
 	} else if (!strcmp (opt, "log-finalizers")) {
 		log_finalizers = TRUE;
 	} else if (!strcmp (opt, "no-managed-allocator")) {

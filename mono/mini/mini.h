@@ -111,7 +111,7 @@
 #endif
 
 /* Version number of the AOT file format */
-#define MONO_AOT_FILE_VERSION 124
+#define MONO_AOT_FILE_VERSION 125
 
 //TODO: This is x86/amd64 specific.
 #define mono_simd_shuffle_mask(a,b,c,d) ((a) | ((b) << 2) | ((c) << 4) | ((d) << 6))
@@ -731,7 +731,11 @@ typedef struct MonoMemcpyArgs {
 
 typedef enum {
 	LLVMArgNone,
+	/* Scalar argument passed by value */
+	LLVMArgNormal,
+	/* Only in ainfo->pair_storage */
 	LLVMArgInIReg,
+	/* Only in ainfo->pair_storage */
 	LLVMArgInFPReg,
 	LLVMArgVtypeInReg,
 	LLVMArgVtypeByVal,
@@ -749,6 +753,10 @@ typedef enum {
 	LLVMArgVtypeByRef,
 	/* Vtype returned as an int */
 	LLVMArgVtypeAsScalar,
+	/* Scalar returned by ref using an additional argument */
+	LLVMArgScalarRetAddr,
+	/* Scalar passed by ref */
+	LLVMArgScalarByRef
 } LLVMArgStorage;
 
 typedef struct {
@@ -769,6 +777,9 @@ typedef struct {
 	int nslots;
 	/* Only if storage == LLVMArgAsFpArgs/LLVMArgFpStruct (4/8) */
 	int esize;
+	/* Parameter index in the LLVM signature */
+	int pindex;
+	MonoType *type;
 } LLVMArgInfo;
 
 typedef struct {
@@ -783,11 +794,6 @@ typedef struct {
 	 * Should be 0 or 1.
 	 */
 	int vret_arg_index;
-	/*
-	 * Maps parameter indexes in the original signature to parameter indexes
-	 * in the LLVM signature.
-	 */
-	int *pindexes;
 	/* The indexes of various special arguments in the LLVM signature */
 	int vret_arg_pindex, this_arg_pindex, rgctx_arg_pindex, imt_arg_pindex;
 
