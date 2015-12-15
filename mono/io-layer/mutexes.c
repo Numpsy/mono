@@ -15,10 +15,9 @@
 
 #include <mono/io-layer/wapi.h>
 #include <mono/io-layer/wapi-private.h>
-#include <mono/io-layer/misc-private.h>
 #include <mono/io-layer/handles-private.h>
 #include <mono/io-layer/mutex-private.h>
-#include <mono/utils/mono-mutex.h>
+#include <mono/utils/mono-once.h>
 
 #if 0
 #define DEBUG(...) g_message(__VA_ARGS__)
@@ -92,13 +91,9 @@ static mono_once_t mutex_ops_once=MONO_ONCE_INIT;
 static void mutex_ops_init (void)
 {
 	_wapi_handle_register_capabilities (WAPI_HANDLE_MUTEX,
-					    WAPI_HANDLE_CAP_WAIT |
-					    WAPI_HANDLE_CAP_SIGNAL |
-					    WAPI_HANDLE_CAP_OWN);
+		(WapiHandleCapability)(WAPI_HANDLE_CAP_WAIT | WAPI_HANDLE_CAP_SIGNAL | WAPI_HANDLE_CAP_OWN));
 	_wapi_handle_register_capabilities (WAPI_HANDLE_NAMEDMUTEX,
-					    WAPI_HANDLE_CAP_WAIT |
-					    WAPI_HANDLE_CAP_SIGNAL |
-					    WAPI_HANDLE_CAP_OWN);
+		(WapiHandleCapability)(WAPI_HANDLE_CAP_WAIT | WAPI_HANDLE_CAP_SIGNAL | WAPI_HANDLE_CAP_OWN));
 }
 
 static void mutex_signal(gpointer handle)

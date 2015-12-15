@@ -1,4 +1,4 @@
-../../../external/referencesource/System.Data/bid/inc/cs/bidPrivateBase.cs
+MobileStubs.cs
 
 ../../../external/referencesource/System.Data/Microsoft/SqlServer/Server/SqlTriggerContext.cs
 
@@ -66,7 +66,6 @@
 ../../../external/referencesource/System.Data/System/Data/Common/ObjectStorage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/RowUpdatedEventArgs.cs
 ../../../external/referencesource/System.Data/System/Data/Common/RowUpdatingEventArgs.cs
-../../../external/referencesource/System.Data/System/Data/Common/SafeNativeMethods.cs
 ../../../external/referencesource/System.Data/System/Data/Common/SByteStorage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/SchemaTableColumn.cs
 ../../../external/referencesource/System.Data/System/Data/Common/SchemaTableOptionalColumn.cs
@@ -91,12 +90,10 @@
 ../../../external/referencesource/System.Data/System/Data/Common/SQLTypes/SqlXmlStorage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/StringStorage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/SupportedJoinOperators.cs
-../../../external/referencesource/System.Data/System/Data/Common/System.Data_BID.cs
 ../../../external/referencesource/System.Data/System/Data/Common/TimeSpanStorage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/UInt16Storage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/UInt32Storage.cs
 ../../../external/referencesource/System.Data/System/Data/Common/UInt64Storage.cs
-../../../external/referencesource/System.Data/System/Data/Common/UnsafeNativeMethods.cs
 ../../../external/referencesource/System.Data/System/Data/ConflictOptions.cs
 ../../../external/referencesource/System.Data/System/Data/ConnectionState.cs
 ../../../external/referencesource/System.Data/System/Data/ConstraintCollection.cs
@@ -193,24 +190,13 @@
 ../../../external/referencesource/System.Data/System/Data/PrimaryKeyTypeConverter.cs
 ../../../external/referencesource/System.Data/System/Data/PropertyCollection.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DataReaderContainer.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbBuffer.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionClosed.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionFactory.cs
-# ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionHelper.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionInternal.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolAuthenticationContext.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolAuthenticationContextKey.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPool.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolGroup.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolGroupProviderInfo.cs
-../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolIdentity.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolOptions.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbConnectionPoolProviderInfo.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbMetaDataCollectionNames.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbMetaDataColumnNames.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbMetaDataFactory.cs
-# ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbParameterCollectionHelper.cs
-# ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbParameterHelper.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/DbReferenceCollection.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/SchemaMapping.cs
 ../../../external/referencesource/System.Data/System/Data/ProviderBase/TimeoutTimer.cs

@@ -15,11 +15,9 @@
 #include <mono/io-layer/wapi.h>
 #include <mono/io-layer/wapi-private.h>
 #include <mono/io-layer/handles-private.h>
-#include <mono/io-layer/misc-private.h>
-
 #include <mono/io-layer/event-private.h>
+#include <mono/utils/mono-once.h>
 
-#include <mono/utils/mono-mutex.h>
 #if 0
 #define DEBUG(...) g_message(__VA_ARGS__)
 #else
@@ -90,11 +88,9 @@ static mono_once_t event_ops_once=MONO_ONCE_INIT;
 static void event_ops_init (void)
 {
 	_wapi_handle_register_capabilities (WAPI_HANDLE_EVENT,
-					    WAPI_HANDLE_CAP_WAIT |
-					    WAPI_HANDLE_CAP_SIGNAL);
+		(WapiHandleCapability)(WAPI_HANDLE_CAP_WAIT | WAPI_HANDLE_CAP_SIGNAL));
 	_wapi_handle_register_capabilities (WAPI_HANDLE_NAMEDEVENT,
-					    WAPI_HANDLE_CAP_WAIT |
-					    WAPI_HANDLE_CAP_SIGNAL);
+		(WapiHandleCapability)(WAPI_HANDLE_CAP_WAIT | WAPI_HANDLE_CAP_SIGNAL));
 }
 
 static void event_signal(gpointer handle)

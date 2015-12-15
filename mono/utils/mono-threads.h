@@ -10,13 +10,15 @@
 #ifndef __MONO_THREADS_H__
 #define __MONO_THREADS_H__
 
-#include <mono/utils/mono-semaphore.h>
+#include <mono/utils/mono-os-semaphore.h>
 #include <mono/utils/mono-stack-unwinding.h>
 #include <mono/utils/mono-linked-list-set.h>
-#include <mono/utils/mono-mutex.h>
 #include <mono/utils/mono-tls.h>
 #include <mono/utils/mono-threads-coop.h>
 #include <mono/utils/mono-threads-api.h>
+#include <mono/utils/mono-coop-semaphore.h>
+
+#include <mono/io-layer/io-layer.h>
 
 #include <glib.h>
 #include <config.h>
@@ -226,7 +228,7 @@ typedef struct {
 	gboolean create_suspended;
 
 	/* Semaphore used to implement CREATE_SUSPENDED */
-	MonoSemType create_suspended_sem;
+	MonoCoopSem create_suspended_sem;
 
 	/*
 	 * Values of TLS variables for this thread.
@@ -356,9 +358,6 @@ mono_thread_info_list_head (void);
 THREAD_INFO_TYPE*
 mono_thread_info_lookup (MonoNativeThreadId id);
 
-THREAD_INFO_TYPE*
-mono_thread_info_safe_suspend_sync (MonoNativeThreadId tid, gboolean interrupt_kernel);
-
 gboolean
 mono_thread_info_resume (MonoNativeThreadId tid);
 
@@ -376,6 +375,9 @@ void
 mono_thread_info_end_self_suspend (void);
 
 //END of new API
+
+gboolean
+mono_thread_info_unified_management_enabled (void);
 
 void
 mono_thread_info_setup_async_call (THREAD_INFO_TYPE *info, void (*target_func)(void*), void *user_data);
@@ -403,6 +405,9 @@ mono_thread_info_yield (void);
 
 gint
 mono_thread_info_sleep (guint32 ms, gboolean *alerted);
+
+gint
+mono_thread_info_usleep (guint64 us);
 
 gpointer
 mono_thread_info_tls_get (THREAD_INFO_TYPE *info, MonoTlsKey key);
@@ -637,26 +642,5 @@ void mono_threads_add_to_pending_operation_set (THREAD_INFO_TYPE* info); //XXX r
 gboolean mono_threads_wait_pending_operations (void);
 void mono_threads_begin_global_suspend (void);
 void mono_threads_end_global_suspend (void);
-
-#if defined(USE_POSIX_BACKEND)
-
-typedef enum {
-	MONO_THREADS_POSIX_INIT_SIGNALS_SUSPEND_RESTART,
-	MONO_THREADS_POSIX_INIT_SIGNALS_ABORT,
-} MonoThreadPosixInitSignals;
-
-void
-mono_threads_posix_init_signals (MonoThreadPosixInitSignals signals);
-
-#endif /* defined(USE_POSIX_BACKEND) */
-
-gint
-mono_threads_posix_get_suspend_signal (void);
-
-gint
-mono_threads_posix_get_restart_signal (void);
-
-gint
-mono_threads_posix_get_abort_signal (void);
 
 #endif /* __MONO_THREADS_H__ */

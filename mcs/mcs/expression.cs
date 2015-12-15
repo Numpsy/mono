@@ -101,33 +101,17 @@ namespace Mono.CSharp
 
 	public class ParenthesizedExpression : ShimExpression
 	{
-		bool conditional_access_receiver;
-
 		public ParenthesizedExpression (Expression expr, Location loc)
 			: base (expr)
 		{
 			this.loc = loc;
 		}
 
-		void ResolveConditionalAccessReceiver (ResolveContext rc)
-		{
-			if (!rc.HasSet (ResolveContext.Options.DontSetConditionalAccessReceiver) && expr.HasConditionalAccess ()) {
-				conditional_access_receiver = true;
-			}			
-		}
-
 		protected override Expression DoResolve (ResolveContext rc)
 		{
 			Expression res = null;
 
-			ResolveConditionalAccessReceiver (rc);
-			if (conditional_access_receiver) {
-				using (rc.Set (ResolveContext.Options.DontSetConditionalAccessReceiver)) {
-					res = expr.Resolve (rc);
-				}
-			} else {
-				res = expr.Resolve (rc);
-			}
+			res = expr.Resolve (rc);
 
 			var constant = res as Constant;
 			if (constant != null && constant.IsLiteral) {
@@ -135,13 +119,6 @@ namespace Mono.CSharp
 					return res;
 				
 				return Constant.CreateConstantFromValue (res.Type, constant.GetValue (), expr.Location);
-			}
-
-			if (conditional_access_receiver) {
-				expr = res;
-				type = LiftMemberType (rc, res.Type);
-				eclass = expr.eclass;
-				return this;
 			}
 
 			return res;
@@ -155,18 +132,6 @@ namespace Mono.CSharp
 		public override object Accept (StructuralVisitor visitor)
 		{
 			return visitor.Visit (this);
-		}
-
-		public override void Emit (EmitContext ec)
-		{
-			if (!conditional_access_receiver)
-				base.Emit (ec);
-
-			var prev = ec.ConditionalAccess;
-			ec.ConditionalAccess = new ConditionalAccessContext (type, ec.DefineLabel ());
-			expr.Emit (ec);
-			ec.CloseConditionalAccess (type.IsNullableType ? type : null);
-			ec.ConditionalAccess = prev;
 		}
 
 		public override bool HasConditionalAccess ()
@@ -2953,11 +2918,11 @@ namespace Mono.CSharp
 					}
 
 					lifted.Left = b.left.IsNull ?
-						b.left :
+						Nullable.LiftedNull.Create (ltype, b.left.Location) :
 						Convert.ImplicitConversion (rc, lifted.UnwrapLeft ?? b.left, ltype, b.left.Location);
 
 					lifted.Right = b.right.IsNull ?
-						b.right :
+						Nullable.LiftedNull.Create (rtype, b.right.Location) :
 						Convert.ImplicitConversion (rc, lifted.UnwrapRight ?? b.right, rtype, b.right.Location);
 
 					return lifted.Resolve (rc);
@@ -6048,16 +6013,19 @@ namespace Mono.CSharp
 				}
 
 				right.Emit (ec);
-				switch (rtype.BuiltinType) {
-				case BuiltinTypeSpec.Type.SByte:
-				case BuiltinTypeSpec.Type.Byte:
-				case BuiltinTypeSpec.Type.Short:
-				case BuiltinTypeSpec.Type.UShort:
-					ec.Emit (OpCodes.Conv_I);
-					break;
-				case BuiltinTypeSpec.Type.UInt:
-					ec.Emit (OpCodes.Conv_U);
-					break;
+				if (right_const == null) {
+					switch (rtype.BuiltinType) {
+					case BuiltinTypeSpec.Type.SByte:
+					case BuiltinTypeSpec.Type.Byte:
+					case BuiltinTypeSpec.Type.Short:
+					case BuiltinTypeSpec.Type.UShort:
+					case BuiltinTypeSpec.Type.Int:
+						ec.Emit (OpCodes.Conv_I);
+						break;
+					case BuiltinTypeSpec.Type.UInt:
+						ec.Emit (OpCodes.Conv_U);
+						break;
+					}
 				}
 
 				if (right_const == null && size != 1){
@@ -12598,6 +12566,15 @@ namespace Mono.CSharp
 			ca.Emit (ec, best, arguments, loc);
 		}
 
+		public override void FlowAnalysis (FlowAnalysisContext fc)
+		{
+			if (interpolations != null) {
+				foreach (var expr in interpolations) {
+					expr.FlowAnalysis (fc);
+				}
+			}
+		}
+
 		MethodSpec ResolveBestFormatOverload (ResolveContext rc)
 		{
 			var members = MemberCache.FindMembers (rc.BuiltinTypes.String, "Format", true);
@@ -12635,6 +12612,11 @@ namespace Mono.CSharp
 			// as argument(s)
 			//
 			return Convert.ImplicitConversionRequired (rc, expr, rc.BuiltinTypes.Object, expr.Location);
+		}
+
+		public override void FlowAnalysis (FlowAnalysisContext fc)
+		{
+			Child.FlowAnalysis (fc);
 		}
 
 		public int? ResolveAligment (ResolveContext rc)

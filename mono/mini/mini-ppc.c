@@ -62,8 +62,8 @@ enum {
 #define BREAKPOINT_SIZE (PPC_LOAD_SEQUENCE_LENGTH + 4)
 
 /* This mutex protects architecture specific caches */
-#define mono_mini_arch_lock() mono_mutex_lock (&mini_arch_mutex)
-#define mono_mini_arch_unlock() mono_mutex_unlock (&mini_arch_mutex)
+#define mono_mini_arch_lock() mono_os_mutex_lock (&mini_arch_mutex)
+#define mono_mini_arch_unlock() mono_os_mutex_unlock (&mini_arch_mutex)
 static mono_mutex_t mini_arch_mutex;
 
 int mono_exc_esp_offset = 0;
@@ -625,13 +625,16 @@ mono_arch_init (void)
 	if (mono_cpu_count () > 1)
 		cpu_hw_caps |= PPC_SMP_CAPABLE;
 
-	mono_mutex_init_recursive (&mini_arch_mutex);
+	mono_os_mutex_init_recursive (&mini_arch_mutex);
 
 	ss_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT);
 	bp_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT);
 	mono_mprotect (bp_trigger_page, mono_pagesize (), 0);
 
 	mono_aot_register_jit_icall ("mono_ppc_throw_exception", mono_ppc_throw_exception);
+
+	// FIXME: Fix partial sharing for power and remove this
+	mono_set_partial_sharing_supported (FALSE);
 }
 
 /*
@@ -640,7 +643,7 @@ mono_arch_init (void)
 void
 mono_arch_cleanup (void)
 {
-	mono_mutex_destroy (&mini_arch_mutex);
+	mono_os_mutex_destroy (&mini_arch_mutex);
 }
 
 /*
@@ -5969,7 +5972,7 @@ mono_arch_emit_load_got_addr (guint8 *start, guint8 *code, MonoCompile *cfg, Mon
  * r12.
  */
 guint8*
-mono_arch_emit_load_aotconst (guint8 *start, guint8 *code, MonoJumpInfo **ji, int tramp_type, gconstpointer target)
+mono_arch_emit_load_aotconst (guint8 *start, guint8 *code, MonoJumpInfo **ji, MonoJumpInfoType tramp_type, gconstpointer target)
 {
 	/* Load the mscorlib got address */
 	ppc_ldptr (code, ppc_r12, sizeof (gpointer), ppc_r30);

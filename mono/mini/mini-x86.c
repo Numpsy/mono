@@ -52,8 +52,8 @@ static gpointer ss_trampoline;
 static gpointer bp_trampoline;
 
 /* This mutex protects architecture specific caches */
-#define mono_mini_arch_lock() mono_mutex_lock (&mini_arch_mutex)
-#define mono_mini_arch_unlock() mono_mutex_unlock (&mini_arch_mutex)
+#define mono_mini_arch_lock() mono_os_mutex_lock (&mini_arch_mutex)
+#define mono_mini_arch_unlock() mono_os_mutex_unlock (&mini_arch_mutex)
 static mono_mutex_t mini_arch_mutex;
 
 #define ALIGN_TO(val,align) ((((guint64)val) + ((align) - 1)) & ~((align) - 1))
@@ -754,7 +754,7 @@ mono_arch_cpu_init (void)
 void
 mono_arch_init (void)
 {
-	mono_mutex_init_recursive (&mini_arch_mutex);
+	mono_os_mutex_init_recursive (&mini_arch_mutex);
 
 	if (!mono_aot_only)
 		bp_trampoline = mini_get_breakpoint_trampoline ();
@@ -772,7 +772,7 @@ mono_arch_init (void)
 void
 mono_arch_cleanup (void)
 {
-	mono_mutex_destroy (&mini_arch_mutex);
+	mono_os_mutex_destroy (&mini_arch_mutex);
 }
 
 /*
@@ -3163,7 +3163,7 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 					saved_eax = TRUE;
 					x86_push_reg (code, X86_EAX);
 				}
-			} else if (ins->dreg != X86_EAX) {
+			} else {
 				saved_edx = TRUE;
 				x86_push_reg (code, X86_EDX);
 			}
@@ -6652,7 +6652,7 @@ emit_load_aotconst (guint8 *start, guint8 *code, MonoCompile *cfg, MonoJumpInfo 
  * EAX.
  */
 guint8*
-mono_arch_emit_load_aotconst (guint8 *start, guint8 *code, MonoJumpInfo **ji, int tramp_type, gconstpointer target)
+mono_arch_emit_load_aotconst (guint8 *start, guint8 *code, MonoJumpInfo **ji, MonoJumpInfoType tramp_type, gconstpointer target)
 {
 	/* Load the mscorlib got address */
 	x86_mov_reg_membase (code, X86_EAX, MONO_ARCH_GOT_REG, sizeof (gpointer), 4);

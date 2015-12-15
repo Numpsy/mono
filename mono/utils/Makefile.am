@@ -37,8 +37,9 @@ monoutils_sources = \
 	mono-mmap.c  		\
 	mono-mmap.h  		\
 	mono-mmap-internals.h	\
-	mono-mutex.c  		\
-	mono-mutex.h  		\
+	mono-os-mutex.h		\
+	mono-coop-mutex.h		\
+	mono-once.h		\
 	mono-lazy-init.h		\
 	mono-networkinterfaces.c		\
 	mono-networkinterfaces.h		\
@@ -53,8 +54,8 @@ monoutils_sources = \
 	mono-uri.c		\
 	mono-poll.c		\
 	mono-path.c		\
-	mono-semaphore.c	\
-	mono-semaphore.h	\
+	mono-os-semaphore.h	\
+	mono-coop-semaphore.h		\
 	mono-sigcontext.h	\
 	mono-stdlib.c 		\
 	mono-property-hash.h 	\
@@ -102,6 +103,7 @@ monoutils_sources = \
 	mono-threads-state-machine.c	\
 	mono-threads-posix.c	\
 	mono-threads-posix-signals.c	\
+	mono-threads-posix-signals.h	\
 	mono-threads-mach.c	\
 	mono-threads-mach-helper.c	\
 	mono-threads-windows.c	\
