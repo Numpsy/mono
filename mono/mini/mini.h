@@ -111,7 +111,7 @@
 #endif
 
 /* Version number of the AOT file format */
-#define MONO_AOT_FILE_VERSION 128
+#define MONO_AOT_FILE_VERSION 129
 
 //TODO: This is x86/amd64 specific.
 #define mono_simd_shuffle_mask(a,b,c,d) ((a) | ((b) << 2) | ((c) << 4) | ((d) << 6))
@@ -177,7 +177,22 @@ typedef enum {
 	MONO_AOT_FILE_FLAG_LLVM_THUMB = 8,
 	MONO_AOT_FILE_FLAG_LLVM_ONLY = 16,
 	MONO_AOT_FILE_FLAG_SAFEPOINTS = 32,
+	MONO_AOT_FILE_FLAG_SEPARATE_DATA = 64,
 } MonoAotFileFlags;
+
+typedef enum {
+	MONO_AOT_TABLE_BLOB,
+	MONO_AOT_TABLE_IMAGE_TABLE,
+	MONO_AOT_TABLE_CLASS_NAME,
+	MONO_AOT_TABLE_METHOD_INFO_OFFSETS,
+	MONO_AOT_TABLE_EX_INFO_OFFSETS,
+	MONO_AOT_TABLE_CLASS_INFO_OFFSETS,
+	MONO_AOT_TABLE_GOT_INFO_OFFSETS,
+	MONO_AOT_TABLE_LLVM_GOT_INFO_OFFSETS,
+	MONO_AOT_TABLE_EXTRA_METHOD_INFO_OFFSETS,
+	MONO_AOT_TABLE_EXTRA_METHOD_TABLE,
+	MONO_AOT_TABLE_NUM
+} MonoAotFileTable;
 
 /* This structure is stored in the AOT file */
 typedef struct MonoAotFileInfo
@@ -213,8 +228,8 @@ typedef struct MonoAotFileInfo
 	gpointer extra_method_table;
 	gpointer got_info_offsets;
 	gpointer llvm_got_info_offsets;
-	gpointer mem_end;
 	gpointer image_table;
+	gpointer mem_end;
 	/* The GUID of the assembly which the AOT image was generated from */
 	gpointer assembly_guid;
 	/*
@@ -271,7 +286,13 @@ typedef struct MonoAotFileInfo
 	 * module is loaded.
 	 */
 	guint32 nshared_got_entries;
+	/* The size of the data file, if MONO_AOT_FILE_FLAG_SEPARATE_DATA is set */
+	guint32 datafile_size;
+
 	/* Arrays */
+	/* Offsets for tables inside the data file if MONO_AOT_FILE_FLAG_SEPARATE_DATA is set */
+	// FIXME: Sync with AOT
+	guint32 table_offsets [MONO_AOT_TABLE_NUM];
 	/* Number of trampolines */
 	guint32 num_trampolines [MONO_AOT_TRAMP_NUM];
 	/* The indexes of the first GOT slots used by the trampolines */
@@ -741,8 +762,10 @@ typedef enum {
 	LLVMArgVtypeByVal,
 	LLVMArgVtypeRetAddr, /* On on cinfo->ret */
 	LLVMArgGSharedVt,
-	/* Fixed sized argument passed to/returned from gsharedvt method by ref */
+	/* Fixed size argument passed to/returned from gsharedvt method by ref */
 	LLVMArgGsharedvtFixed,
+	/* Fixed size vtype argument passed to/returned from gsharedvt method by ref */
+	LLVMArgGsharedvtFixedVtype,
 	/* Variable sized argument passed to/returned from gsharedvt method by ref */
 	LLVMArgGsharedvtVariable,
 	/* Vtype passed as one int array argument */
@@ -784,6 +807,8 @@ typedef struct {
 	/* Parameter index in the LLVM signature */
 	int pindex;
 	MonoType *type;
+	/* Only if storage == LLVMArgAsFpArgs. Dummy fp args to insert before this arg */
+	int ndummy_fpargs;
 } LLVMArgInfo;
 
 typedef struct {
@@ -958,7 +983,9 @@ enum {
 	 * Set on instructions during code emission which make calls, i.e. OP_CALL, OP_THROW.
 	 * backend.pc_offset will be set to the pc offset at the end of the native call instructions.
 	 */
-	MONO_INST_GC_CALLSITE = 128
+	MONO_INST_GC_CALLSITE = 128,
+	/* On comparisons, mark the branch following the condition as likely to be taken */
+	MONO_INST_LIKELY = 128,
 };
 
 #define inst_c0 data.op[0].const_val
@@ -1167,6 +1194,7 @@ typedef enum {
 	MONO_RGCTX_INFO_TYPE,
 	MONO_RGCTX_INFO_REFLECTION_TYPE,
 	MONO_RGCTX_INFO_METHOD,
+	/* In llvmonly mode, this is a function descriptor */
 	MONO_RGCTX_INFO_GENERIC_METHOD_CODE,
 	MONO_RGCTX_INFO_CLASS_FIELD,
 	MONO_RGCTX_INFO_METHOD_RGCTX,
@@ -1179,8 +1207,10 @@ typedef enum {
 	/* +1 to avoid zero values in rgctx slots */
 	MONO_RGCTX_INFO_FIELD_OFFSET,
 	/* Either the code for a gsharedvt method, or the address for a gsharedvt-out trampoline for the method */
+	/* In llvmonly mode, this is a function descriptor */
 	MONO_RGCTX_INFO_METHOD_GSHAREDVT_OUT_TRAMPOLINE,
 	/* Same for virtual calls */
+	/* In llvmonly mode, this is a function descriptor */
 	MONO_RGCTX_INFO_METHOD_GSHAREDVT_OUT_TRAMPOLINE_VIRT,
 	/* Same for calli, associated with a signature */
 	MONO_RGCTX_INFO_SIG_GSHAREDVT_OUT_TRAMPOLINE_CALLI,
@@ -1192,6 +1222,7 @@ typedef enum {
 	MONO_RGCTX_INFO_MEMCPY,
 	MONO_RGCTX_INFO_BZERO,
 	/* The address of Nullable<T>.Box () */
+	/* In llvmonly mode, this is a function descriptor */
 	MONO_RGCTX_INFO_NULLABLE_CLASS_BOX,
 	MONO_RGCTX_INFO_NULLABLE_CLASS_UNBOX,
 	/* MONO_PATCH_INFO_VCALL_METHOD */
@@ -1758,6 +1789,10 @@ typedef struct {
 
 	/* DWARF location list for 'rgctx_var' */
 	GSList *rgctx_loclist;
+
+	int *gsharedvt_vreg_to_idx;
+
+	GSList *signatures;
 
 	/* GC Maps */
    
@@ -2399,6 +2434,16 @@ void     mono_aot_init_gshared_method_rgctx  (gpointer aot_module, guint32 metho
 /* This is an exported function */
 MONO_API void     mono_aot_register_module           (gpointer *aot_info);
 
+/* These are used to load the AOT data for aot images compiled with MONO_AOT_FILE_FLAG_SEPARATE_DATA */
+/*
+ * Return the AOT data for ASSEMBLY. SIZE is the size of the data. OUT_HANDLE should be set to a handle which is later
+ * passed to the free function.
+ */
+typedef unsigned char* (*MonoLoadAotDataFunc)          (MonoAssembly *assembly, int size, gpointer user_data, void **out_handle);
+/* Not yet used */
+typedef void  (*MonoFreeAotDataFunc)          (MonoAssembly *assembly, int size, gpointer user_data, void *handle);
+MONO_API void mono_install_load_aot_data_hook (MonoLoadAotDataFunc load_func, MonoFreeAotDataFunc free_func, gpointer user_data);
+
 void     mono_xdebug_init                   (const char *xdebug_opts);
 void     mono_save_xdebug_info              (MonoCompile *cfg);
 void     mono_save_trampoline_xdebug_info   (MonoTrampInfo *info);
@@ -2457,7 +2502,7 @@ void              mono_monitor_enter_trampoline (mgreg_t *regs, guint8 *code, Mo
 void              mono_monitor_enter_v4_trampoline (mgreg_t *regs, guint8 *code, MonoObject *obj, guint8 *tramp);
 void              mono_monitor_exit_trampoline (mgreg_t *regs, guint8 *code, MonoObject *obj, guint8 *tramp);
 gconstpointer     mono_get_trampoline_func (MonoTrampolineType tramp_type);
-gpointer          mini_get_vtable_trampoline (int slot_index);
+gpointer          mini_get_vtable_trampoline (MonoVTable *vt, int slot_index);
 const char*       mono_get_generic_trampoline_simple_name (MonoTrampolineType tramp_type);
 char*             mono_get_generic_trampoline_name (MonoTrampolineType tramp_type);
 char*             mono_get_rgctx_fetch_trampoline_name (int slot);
@@ -2465,6 +2510,8 @@ gpointer          mini_get_nullified_class_init_trampoline (void);
 gpointer          mini_get_single_step_trampoline (void);
 gpointer          mini_get_breakpoint_trampoline (void);
 gpointer          mini_add_method_trampoline (MonoMethod *m, gpointer compiled_method, gboolean add_static_rgctx_tramp, gboolean add_unbox_tramp);
+gpointer          mini_add_method_wrappers_llvmonly (MonoMethod *m, gpointer compiled_method, gboolean caller_gsharedvt, gboolean add_unbox_tramp, gpointer *out_arg);
+gpointer          mini_create_llvmonly_ftndesc (gpointer addr, gpointer arg);
 gboolean          mini_jit_info_is_gsharedvt (MonoJitInfo *ji);
 gpointer*         mini_resolve_imt_method (MonoVTable *vt, gpointer *vtable_slot, MonoMethod *imt_method, MonoMethod **impl_method, gpointer *out_aot_addr,
 										   gboolean *out_need_rgctx_tramp, MonoMethod **variant_iface);
@@ -2512,6 +2559,7 @@ void              mono_decompose_array_access_opts (MonoCompile *cfg);
 void              mono_decompose_soft_float (MonoCompile *cfg);
 void              mono_handle_global_vregs (MonoCompile *cfg);
 void              mono_spill_global_vars (MonoCompile *cfg, gboolean *need_local_opts);
+void              mono_allocate_gsharedvt_vars (MonoCompile *cfg);
 void              mono_if_conversion (MonoCompile *cfg);
 
 /* virtual function delegate */
@@ -2759,6 +2807,7 @@ void        mono_compute_natural_loops          (MonoCompile *cfg);
 MonoBitSet* mono_compile_iterated_dfrontier     (MonoCompile *cfg, MonoBitSet *set);
 void        mono_ssa_compute                    (MonoCompile *cfg);
 void        mono_ssa_remove                     (MonoCompile *cfg);
+void        mono_ssa_remove_gsharedvt           (MonoCompile *cfg);
 void        mono_ssa_cprop                      (MonoCompile *cfg);
 void        mono_ssa_deadce                     (MonoCompile *cfg);
 void        mono_ssa_strength_reduction         (MonoCompile *cfg);
@@ -2931,6 +2980,10 @@ void mini_init_gsctx (MonoDomain *domain, MonoMemPool *mp, MonoGenericContext *c
 
 gpointer mini_get_gsharedvt_wrapper (gboolean gsharedvt_in, gpointer addr, MonoMethodSignature *normal_sig, MonoMethodSignature *gsharedvt_sig,
 									 gint32 vcall_offset, gboolean calli);
+MonoMethod* mini_get_gsharedvt_in_sig_wrapper (MonoMethodSignature *sig);
+MonoMethod* mini_get_gsharedvt_out_sig_wrapper (MonoMethodSignature *sig);
+MonoMethodSignature* mini_get_gsharedvt_out_sig_wrapper_signature (gboolean has_this, gboolean has_ret, int param_count);
+gboolean mini_gsharedvt_runtime_invoke_supported (MonoMethodSignature *sig);
 
 /* SIMD support */
 

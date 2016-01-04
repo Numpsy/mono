@@ -146,10 +146,13 @@ MONO_API MonoInst* mono_emit_native_call (MonoCompile *cfg, gconstpointer func, 
 
 static int inline_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig, MonoInst **sp,
 						  guchar *ip, guint real_offset, gboolean inline_always);
+static MonoInst*
+emit_llvmonly_virtual_call (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig, int context_used, MonoInst **sp, MonoInst *imt_arg);
 
 /* helper methods signatures */
 static MonoMethodSignature *helper_sig_domain_get;
 static MonoMethodSignature *helper_sig_rgctx_lazy_fetch_trampoline;
+static MonoMethodSignature *helper_sig_llvmonly_imt_thunk;
 
 /*
  * Instruction metadata
@@ -354,6 +357,7 @@ mono_create_helper_signatures (void)
 {
 	helper_sig_domain_get = mono_create_icall_signature ("ptr");
 	helper_sig_rgctx_lazy_fetch_trampoline = mono_create_icall_signature ("ptr ptr");
+	helper_sig_llvmonly_imt_thunk = mono_create_icall_signature ("ptr ptr ptr");
 }
 
 static MONO_NEVER_INLINE void
@@ -2760,26 +2764,8 @@ mono_emit_method_call_full (MonoCompile *cfg, MonoMethod *method, MonoMethodSign
 	if (!sig)
 		sig = mono_method_signature (method);
 
-	if (cfg->llvm_only && (method->klass->flags & TYPE_ATTRIBUTE_INTERFACE)) {
-		MonoInst *icall_args [16];
-		MonoInst *ins;
-
-		// FIXME: Optimize this
-
-		guint32 imt_slot = mono_method_get_imt_slot (method);
-
-		icall_args [0] = this_ins;
-		EMIT_NEW_ICONST (cfg, icall_args [1], imt_slot);
-		if (imt_arg) {
-			icall_args [2] = imt_arg;
-		} else {
-			EMIT_NEW_AOTCONST (cfg, ins, MONO_PATCH_INFO_METHODCONST, method);
-			icall_args [2] = ins;
-		}
-		EMIT_NEW_PCONST (cfg, icall_args [3], NULL);
-
-		call_target = mono_emit_jit_icall (cfg, mono_resolve_iface_call, icall_args);
-	}
+	if (cfg->llvm_only && (method->klass->flags & TYPE_ATTRIBUTE_INTERFACE))
+		g_assert_not_reached ();
 
 	if (rgctx_arg) {
 		rgctx_reg = mono_alloc_preg (cfg);
@@ -2813,33 +2799,8 @@ mono_emit_method_call_full (MonoCompile *cfg, MonoMethod *method, MonoMethodSign
 	}
 #endif
 
-	if (cfg->llvm_only && !call_target && virtual_ && (method->flags & METHOD_ATTRIBUTE_VIRTUAL)) {
-		// FIXME: Vcall optimizations below
-		MonoInst *icall_args [16];
-		MonoInst *ins;
-
-		if (sig->generic_param_count) {
-			/*
-			 * Generic virtual call, pass the concrete method as the imt argument.
-			 */
-			imt_arg = emit_get_rgctx_method (cfg, context_used,
-											 method, MONO_RGCTX_INFO_METHOD);
-		}
-
-		// FIXME: Optimize this
-
-		int slot = mono_method_get_vtable_index (method);
-
-		icall_args [0] = this_ins;
-		EMIT_NEW_ICONST (cfg, icall_args [1], slot);
-		if (imt_arg) {
-			icall_args [2] = imt_arg;
-		} else {
-			EMIT_NEW_PCONST (cfg, ins, NULL);
-			icall_args [2] = ins;
-		}
-		call_target = mono_emit_jit_icall (cfg, mono_resolve_vcall, icall_args);
-	}
+	if (cfg->llvm_only && !call_target && virtual_ && (method->flags & METHOD_ATTRIBUTE_VIRTUAL))
+		return emit_llvmonly_virtual_call (cfg, method, sig, 0, args, NULL);
 
 	need_unbox_trampoline = method->klass == mono_defaults.object_class || (method->klass->flags & TYPE_ATTRIBUTE_INTERFACE);
 
@@ -3013,6 +2974,68 @@ mono_emit_abs_call (MonoCompile *cfg, MonoJumpInfoType patch_type, gconstpointer
 	ins = mono_emit_native_call (cfg, ji, sig, args);
 	((MonoCallInst*)ins)->fptr_is_patch = TRUE;
 	return ins;
+}
+
+static MonoMethodSignature*
+sig_to_rgctx_sig (MonoMethodSignature *sig)
+{
+	// FIXME: memory allocation
+	MonoMethodSignature *res;
+	int i;
+
+	res = (MonoMethodSignature *)g_malloc (MONO_SIZEOF_METHOD_SIGNATURE + (sig->param_count + 1) * sizeof (MonoType*));
+	memcpy (res, sig, MONO_SIZEOF_METHOD_SIGNATURE);
+	res->param_count = sig->param_count + 1;
+	for (i = 0; i < sig->param_count; ++i)
+		res->params [i] = sig->params [i];
+	res->params [sig->param_count] = &mono_defaults.int_class->this_arg;
+	return res;
+}
+
+/* Make an indirect call to FSIG passing an additional argument */
+static MonoInst*
+emit_extra_arg_calli (MonoCompile *cfg, MonoMethodSignature *fsig, MonoInst **orig_args, int arg_reg, MonoInst *call_target)
+{
+	MonoMethodSignature *csig;
+	MonoInst *args_buf [16];
+	MonoInst **args;
+	int i, pindex, tmp_reg;
+
+	/* Make a call with an rgctx/extra arg */
+	if (fsig->param_count + 2 < 16)
+		args = args_buf;
+	else
+		args = (MonoInst **)mono_mempool_alloc0 (cfg->mempool, sizeof (MonoInst*) * (fsig->param_count + 2));
+	pindex = 0;
+	if (fsig->hasthis)
+		args [pindex ++] = orig_args [0];
+	for (i = 0; i < fsig->param_count; ++i)
+		args [pindex ++] = orig_args [fsig->hasthis + i];
+	tmp_reg = alloc_preg (cfg);
+	EMIT_NEW_UNALU (cfg, args [pindex], OP_MOVE, tmp_reg, arg_reg);
+	csig = sig_to_rgctx_sig (fsig);
+	return mono_emit_calli (cfg, csig, args, call_target, NULL, NULL);
+}
+
+/* Emit an indirect call to the function descriptor ADDR */
+static MonoInst*
+emit_llvmonly_calli (MonoCompile *cfg, MonoMethodSignature *fsig, MonoInst **args, MonoInst *addr)
+{
+	int addr_reg, arg_reg;
+	MonoInst *call_target;
+
+	g_assert (cfg->llvm_only);
+
+	/*
+	 * addr points to a <addr, arg> pair, load both of them, and
+	 * make a call to addr, passing arg as an extra arg.
+	 */
+	addr_reg = alloc_preg (cfg);
+	EMIT_NEW_LOAD_MEMBASE (cfg, call_target, OP_LOAD_MEMBASE, addr_reg, addr->dreg, 0);
+	arg_reg = alloc_preg (cfg);
+	MONO_EMIT_NEW_LOAD_MEMBASE (cfg, arg_reg, addr->dreg, sizeof (gpointer));
+
+	return emit_extra_arg_calli (cfg, fsig, args, arg_reg, call_target);
 }
 
 static gboolean
@@ -3402,6 +3425,8 @@ mini_emit_initobj (MonoCompile *cfg, MonoInst *dest, const guchar *ip, MonoClass
 		mono_emit_calli (cfg, mono_method_signature (bzero_method), iargs, bzero_ins, NULL, NULL);
 		return;
 	}
+
+	klass = mono_class_from_mono_type (mini_get_underlying_type (&klass->byval_arg));
 
 	n = mono_class_value_size (klass, &align);
 
@@ -3986,10 +4011,13 @@ handle_unbox_nullable (MonoCompile* cfg, MonoInst* val, MonoClass* klass, int co
 		   RGCTX. */
 		addr = emit_get_rgctx_method (cfg, context_used, method,
 									  MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
+		if (cfg->llvm_only && cfg->gsharedvt) {
+			return emit_llvmonly_calli (cfg, mono_method_signature (method), &val, addr);
+		} else {
+			rgctx = emit_get_rgctx (cfg, cfg->current_method, context_used);
 
-		rgctx = emit_get_rgctx (cfg, cfg->current_method, context_used);
-
-		return mono_emit_calli (cfg, mono_method_signature (method), &val, addr, NULL, rgctx);
+			return mono_emit_calli (cfg, mono_method_signature (method), &val, addr, NULL, rgctx);
+		}
 	} else {
 		gboolean pass_vtable, pass_mrgctx;
 		MonoInst *rgctx_arg = NULL;
@@ -4118,7 +4146,11 @@ handle_unbox_gsharedvt (MonoCompile *cfg, MonoClass *klass, MonoInst *obj)
 		unbox_sig->ret = &klass->byval_arg;
 		unbox_sig->param_count = 1;
 		unbox_sig->params [0] = &mono_defaults.object_class->byval_arg;
-		unbox_call = mono_emit_calli (cfg, unbox_sig, &obj, addr, NULL, NULL);
+
+		if (cfg->llvm_only)
+			unbox_call = emit_llvmonly_calli (cfg, unbox_sig, &obj, addr);
+		else
+			unbox_call = mono_emit_calli (cfg, unbox_sig, &obj, addr, NULL, NULL);
 
 		EMIT_NEW_VARLOADA_VREG (cfg, addr, unbox_call->dreg, &klass->byval_arg);
 		addr->dreg = addr_reg;
@@ -4240,13 +4272,19 @@ handle_box (MonoCompile *cfg, MonoInst *val, MonoClass *klass, int context_used)
 		MonoMethod* method = mono_class_get_method_from_name (klass, "Box", 1);
 
 		if (context_used) {
-			/* FIXME: What if the class is shared?  We might not
-			   have to get the method address from the RGCTX. */
-			MonoInst *addr = emit_get_rgctx_method (cfg, context_used, method,
-													MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
-			MonoInst *rgctx = emit_get_rgctx (cfg, cfg->current_method, context_used);
+			if (cfg->llvm_only && cfg->gsharedvt) {
+				MonoInst *addr = emit_get_rgctx_method (cfg, context_used, method,
+														MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
+				return emit_llvmonly_calli (cfg, mono_method_signature (method), &val, addr);
+			} else {
+				/* FIXME: What if the class is shared?  We might not
+				   have to get the method address from the RGCTX. */
+				MonoInst *addr = emit_get_rgctx_method (cfg, context_used, method,
+														MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
+				MonoInst *rgctx = emit_get_rgctx (cfg, cfg->current_method, context_used);
 
-			return mono_emit_calli (cfg, mono_method_signature (method), &val, addr, NULL, rgctx);
+				return mono_emit_calli (cfg, mono_method_signature (method), &val, addr, NULL, rgctx);
+			}
 		} else {
 			gboolean pass_vtable, pass_mrgctx;
 			MonoInst *rgctx_arg = NULL;
@@ -4322,7 +4360,11 @@ handle_box (MonoCompile *cfg, MonoInst *val, MonoClass *klass, int context_used)
 			box_sig->ret = &mono_defaults.object_class->byval_arg;
 			box_sig->param_count = 1;
 			box_sig->params [0] = &klass->byval_arg;
-			box_call = mono_emit_calli (cfg, box_sig, &val, addr, NULL, NULL);
+
+			if (cfg->llvm_only)
+				box_call = emit_llvmonly_calli (cfg, box_sig, &val, addr);
+			else
+				box_call = mono_emit_calli (cfg, box_sig, &val, addr, NULL, NULL);
 			EMIT_NEW_UNALU (cfg, res, OP_MOVE, dreg, box_call->dreg);
 			res->type = STACK_OBJ;
 			res->klass = klass;
@@ -7567,6 +7609,153 @@ emit_optimized_ldloca_ir (MonoCompile *cfg, unsigned char *ip, unsigned char *en
 	return NULL;
 }
 
+static MonoInst*
+emit_llvmonly_virtual_call (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig, int context_used, MonoInst **sp, MonoInst *imt_arg)
+{
+	MonoInst *icall_args [16];
+	MonoInst *call_target, *ins;
+	int arg_reg;
+	gboolean is_iface = cmethod->klass->flags & TYPE_ATTRIBUTE_INTERFACE;
+	guint32 slot;
+
+	MONO_EMIT_NULL_CHECK (cfg, sp [0]->dreg);
+
+	// FIXME: Pass a vtable to the icalls
+
+	if (is_iface)
+		slot = mono_method_get_imt_slot (cmethod);
+	else
+		slot = mono_method_get_vtable_index (cmethod);
+
+	if (!fsig->generic_param_count && !is_iface && !imt_arg && !(cfg->gsharedvt && mini_is_gsharedvt_variable_signature (fsig))) {
+		/*
+		 * The simplest case, a normal virtual call.
+		 */
+		int this_reg = sp [0]->dreg;
+		int vtable_reg = alloc_preg (cfg);
+		int slot_reg = alloc_preg (cfg);
+		int addr_reg = alloc_preg (cfg);
+		int arg_reg = alloc_preg (cfg);
+		int offset;
+		MonoBasicBlock *non_null_bb;
+
+		MONO_EMIT_NEW_LOAD_MEMBASE (cfg, vtable_reg, this_reg, MONO_STRUCT_OFFSET (MonoObject, vtable));
+		offset = MONO_STRUCT_OFFSET (MonoVTable, vtable) + (slot * SIZEOF_VOID_P);
+
+		/* Load the vtable slot, which contains a function descriptor. */
+		MONO_EMIT_NEW_LOAD_MEMBASE (cfg, slot_reg, vtable_reg, offset);
+
+		NEW_BBLOCK (cfg, non_null_bb);
+
+		MONO_EMIT_NEW_BIALU_IMM (cfg, OP_COMPARE_IMM, -1, slot_reg, 0);
+		cfg->cbb->last_ins->flags |= MONO_INST_LIKELY;
+		MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_PBNE_UN, non_null_bb);
+
+		/* Slow path */
+		// FIXME: Make the wrapper use the preserveall cconv
+		// FIXME: Use one icall per slot for small slot numbers ?
+		icall_args [0] = sp [0];
+		EMIT_NEW_ICONST (cfg, icall_args [1], slot);
+		/* Make the icall return the vtable slot value to save some code space */
+		ins = mono_emit_jit_icall (cfg, mono_init_vtable_slot, icall_args);
+		ins->dreg = slot_reg;
+		MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_BR, non_null_bb);
+
+		/* Fastpath */
+		MONO_START_BB (cfg, non_null_bb);
+		/* Load the address + arg from the vtable slot */
+		EMIT_NEW_LOAD_MEMBASE (cfg, call_target, OP_LOAD_MEMBASE, addr_reg, slot_reg, 0);
+		MONO_EMIT_NEW_LOAD_MEMBASE (cfg, arg_reg, slot_reg, SIZEOF_VOID_P);
+
+		return emit_extra_arg_calli (cfg, fsig, sp, arg_reg, call_target);
+	}
+
+	if (!fsig->generic_param_count && is_iface && !imt_arg && !(cfg->gsharedvt && mini_is_gsharedvt_variable_signature (fsig))) {
+		/*
+		 * A simple interface call
+		 *
+		 * We make a call through an imt slot to obtain the function descriptor we need to call.
+		 * The imt slot contains a function descriptor for a runtime function + arg.
+		 * The slot is already initialized when the vtable is created so there is no need
+		 * to check it here.
+		 */
+		int this_reg = sp [0]->dreg;
+		int vtable_reg = alloc_preg (cfg);
+		int slot_reg = alloc_preg (cfg);
+		int addr_reg = alloc_preg (cfg);
+		int arg_reg = alloc_preg (cfg);
+		int offset;
+		MonoInst *thunk_addr_ins, *thunk_arg_ins, *ftndesc_ins;
+
+		MONO_EMIT_NEW_LOAD_MEMBASE (cfg, vtable_reg, this_reg, MONO_STRUCT_OFFSET (MonoObject, vtable));
+		offset = ((gint32)slot - MONO_IMT_SIZE) * SIZEOF_VOID_P;
+
+		/* Load the imt slot, which contains a function descriptor. */
+		MONO_EMIT_NEW_LOAD_MEMBASE (cfg, slot_reg, vtable_reg, offset);
+
+		/* Load the address + arg of the imt thunk from the imt slot */
+		EMIT_NEW_LOAD_MEMBASE (cfg, thunk_addr_ins, OP_LOAD_MEMBASE, addr_reg, slot_reg, 0);
+		EMIT_NEW_LOAD_MEMBASE (cfg, thunk_arg_ins, OP_LOAD_MEMBASE, arg_reg, slot_reg, SIZEOF_VOID_P);
+		/*
+		 * IMT thunks in llvm-only mode are C functions which take an info argument
+		 * plus the imt method and return the ftndesc to call.
+		 */
+		icall_args [0] = thunk_arg_ins;
+		EMIT_NEW_AOTCONST (cfg, ins, MONO_PATCH_INFO_METHODCONST, cmethod);
+		icall_args [1] = ins;
+		ftndesc_ins = mono_emit_calli (cfg, helper_sig_llvmonly_imt_thunk, icall_args, thunk_addr_ins, NULL, NULL);
+
+		return emit_llvmonly_calli (cfg, fsig, sp, ftndesc_ins);
+	}
+
+	// FIXME: Optimize this
+
+	icall_args [0] = sp [0];
+	EMIT_NEW_ICONST (cfg, icall_args [1], slot);
+
+	if (fsig->generic_param_count) {
+		/* virtual generic call */
+		g_assert (!imt_arg);
+		/* Same as the virtual generic case above */
+		imt_arg = emit_get_rgctx_method (cfg, context_used,
+										 cmethod, MONO_RGCTX_INFO_METHOD);
+		icall_args [2] = imt_arg;
+	} else if (imt_arg) {
+		icall_args [2] = imt_arg;
+	} else {
+		EMIT_NEW_AOTCONST (cfg, ins, MONO_PATCH_INFO_METHODCONST, cmethod);
+		icall_args [2] = ins;
+	}
+
+	// FIXME: For generic virtual calls, avoid computing the rgctx twice
+
+	arg_reg = alloc_preg (cfg);
+	MONO_EMIT_NEW_PCONST (cfg, arg_reg, NULL);
+	EMIT_NEW_VARLOADA_VREG (cfg, icall_args [3], arg_reg, &mono_defaults.int_class->byval_arg);
+
+	if (cfg->gsharedvt && mini_is_gsharedvt_variable_signature (fsig)) {
+		/*
+		 * We handle virtual calls made from gsharedvt methods here instead
+		 * of the gsharedvt block above.
+		 */
+		if (is_iface)
+			call_target = mono_emit_jit_icall (cfg, mono_resolve_iface_call_gsharedvt, icall_args);
+		else
+			call_target = mono_emit_jit_icall (cfg, mono_resolve_vcall_gsharedvt, icall_args);
+	} else {
+		if (is_iface)
+			call_target = mono_emit_jit_icall (cfg, mono_resolve_iface_call, icall_args);
+		else
+			call_target = mono_emit_jit_icall (cfg, mono_resolve_vcall, icall_args);
+	}
+
+	/*
+	 * Pass the extra argument even if the callee doesn't receive it, most
+	 * calling conventions allow this.
+	 */
+	return emit_extra_arg_calli (cfg, fsig, sp, arg_reg, call_target);
+}
+
 static gboolean
 is_exception_class (MonoClass *klass)
 {
@@ -7734,7 +7923,13 @@ handle_ctor_call (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fs
 		MonoInst *addr;
 
 		addr = emit_get_rgctx_gsharedvt_call (cfg, context_used, fsig, cmethod, MONO_RGCTX_INFO_METHOD_GSHAREDVT_OUT_TRAMPOLINE);
-		mono_emit_calli (cfg, fsig, sp, addr, NULL, vtable_arg);
+
+		if (cfg->llvm_only) {
+			// FIXME: Avoid initializing vtable_arg
+			emit_llvmonly_calli (cfg, fsig, sp, addr);
+		} else {
+			mono_emit_calli (cfg, fsig, sp, addr, NULL, vtable_arg);
+		}
 	} else if (context_used &&
 			   ((!mono_method_is_generic_sharable_full (cmethod, TRUE, FALSE, FALSE) ||
 				 !mono_class_generic_sharing_enabled (cmethod->klass)) || cfg->gsharedvt)) {
@@ -7742,10 +7937,16 @@ handle_ctor_call (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fs
 
 		/* Generic calls made out of gsharedvt methods cannot be patched, so use an indirect call */
 
-		cmethod_addr = emit_get_rgctx_method (cfg, context_used,
-											  cmethod, MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
+		if (cfg->llvm_only) {
+			MonoInst *addr = emit_get_rgctx_method (cfg, context_used, cmethod,
+													MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
+			emit_llvmonly_calli (cfg, fsig, sp, addr);
+		} else {
+			cmethod_addr = emit_get_rgctx_method (cfg, context_used,
+												  cmethod, MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
 
-		mono_emit_calli (cfg, fsig, sp, cmethod_addr, NULL, vtable_arg);
+			mono_emit_calli (cfg, fsig, sp, cmethod_addr, NULL, vtable_arg);
+		}
 	} else {
 		INLINE_FAILURE ("ctor call");
 		ins = mono_emit_method_call_full (cfg, cmethod, fsig, FALSE, sp,
@@ -7788,22 +7989,6 @@ emit_setret (MonoCompile *cfg, MonoInst *val)
 		mono_arch_emit_setret (cfg, cfg->method, val);
 #endif
 	}
-}
-
-static MonoMethodSignature*
-sig_to_rgctx_sig (MonoMethodSignature *sig)
-{
-	// FIXME: memory allocation
-	MonoMethodSignature *res;
-	int i;
-
-	res = (MonoMethodSignature *)g_malloc (MONO_SIZEOF_METHOD_SIGNATURE + (sig->param_count + 1) * sizeof (MonoType*));
-	memcpy (res, sig, MONO_SIZEOF_METHOD_SIGNATURE);
-	res->param_count = sig->param_count + 1;
-	for (i = 0; i < sig->param_count; ++i)
-		res->params [i] = sig->params [i];
-	res->params [sig->param_count] = &mono_defaults.int_class->byval_arg;
-	return res;
 }
 
 /*
@@ -8808,6 +8993,10 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 					/* Not tested */
 					GSHAREDVT_FAILURE (*ip);
 
+				if (cfg->llvm_only)
+					// FIXME:
+					GSHAREDVT_FAILURE (*ip);
+
 				addr = emit_get_rgctx_sig (cfg, context_used,
 											  fsig, MONO_RGCTX_INFO_SIG_GSHAREDVT_OUT_TRAMPOLINE_CALLI);
 				ins = (MonoInst*)mono_emit_calli (cfg, fsig, sp, addr, NULL, callee);
@@ -8980,6 +9169,9 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 				fsig = mono_method_get_signature_checked (cmethod, image, token, generic_context, &cfg->error);
 				CHECK_CFG_ERROR;
 			}
+
+			if (cfg->llvm_only && !cfg->method->wrapper_type)
+				cfg->signatures = g_slist_prepend_mempool (cfg->mempool, cfg->signatures, fsig);
 
 			/* See code below */
 			if (cmethod->klass == mono_defaults.monitor_class && !strcmp (cmethod->name, "Enter") && mono_method_signature (cmethod)->param_count == 1) {
@@ -9418,7 +9610,8 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 			 * patching gshared method addresses into a gsharedvt method.
 			 */
 			if (cfg->gsharedvt && (mini_is_gsharedvt_signature (fsig) || cmethod->is_inflated || cmethod->klass->generic_class) &&
-				!(cmethod->klass->rank && cmethod->klass->byval_arg.type != MONO_TYPE_SZARRAY)) {
+				!(cmethod->klass->rank && cmethod->klass->byval_arg.type != MONO_TYPE_SZARRAY) &&
+				(!(cfg->llvm_only && virtual_))) {
 				MonoRgctxInfoType info_type;
 
 				if (virtual_) {
@@ -9452,7 +9645,12 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 					info_type = MONO_RGCTX_INFO_METHOD_GSHAREDVT_OUT_TRAMPOLINE;
 				addr = emit_get_rgctx_gsharedvt_call (cfg, context_used, fsig, cmethod, info_type);
 
-				ins = (MonoInst*)mono_emit_calli (cfg, fsig, sp, addr, imt_arg, vtable_arg);
+				if (cfg->llvm_only) {
+					// FIXME: Avoid initializing vtable_arg
+					ins = emit_llvmonly_calli (cfg, fsig, sp, addr);
+				} else {
+					ins = (MonoInst*)mono_emit_calli (cfg, fsig, sp, addr, imt_arg, vtable_arg);
+				}
 				goto call_end;
 			}
 
@@ -9484,7 +9682,12 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 					MONO_EMIT_NEW_CHECK_THIS (cfg, sp [0]->dreg);
 
 				addr = emit_get_rgctx_method (cfg, context_used, cmethod, MONO_RGCTX_INFO_GENERIC_METHOD_CODE);
-				ins = (MonoInst*)mono_emit_calli (cfg, fsig, sp, addr, imt_arg, vtable_arg);
+				if (cfg->llvm_only) {
+					// FIXME: Avoid initializing imt_arg/vtable_arg
+					ins = emit_llvmonly_calli (cfg, fsig, sp, addr);
+				} else {
+					ins = (MonoInst*)mono_emit_calli (cfg, fsig, sp, addr, imt_arg, vtable_arg);
+				}
 				goto call_end;
 			}
 
@@ -9631,71 +9834,10 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 			}
 
 			/*
-			 * Interface calls in llvm-only mode are complicated becase the callee might need an rgctx arg,
-			 * (i.e. its a vtype method), and there is no way to for the caller to know this at compile time.
-			 * So we make resolve_iface_call return the rgctx, and do two calls with different signatures
-			 * based on whenever there is an rgctx or not.
+			 * Virtual calls in llvm-only mode.
 			 */
-			if (cfg->llvm_only && virtual_ && cmethod && (cmethod->klass->flags & TYPE_ATTRIBUTE_INTERFACE)) {
-				MonoInst *args_buf [16], *icall_args [16];
-				MonoInst **args;
-				MonoBasicBlock *rgctx_bb, *end_bb;
-				MonoInst *call1, *call2, *call_target;
-				MonoMethodSignature *rgctx_sig;
-				int rgctx_reg, tmp_reg;
-
-				MONO_EMIT_NULL_CHECK (cfg, sp [0]->dreg);
-
-				NEW_BBLOCK (cfg, rgctx_bb);
-				NEW_BBLOCK (cfg, end_bb);
-
-				// FIXME: Optimize this
-
-				guint32 imt_slot = mono_method_get_imt_slot (cmethod);
-
-				icall_args [0] = sp [0];
-				EMIT_NEW_ICONST (cfg, icall_args [1], imt_slot);
-				if (imt_arg) {
-					icall_args [2] = imt_arg;
-				} else {
-					EMIT_NEW_AOTCONST (cfg, ins, MONO_PATCH_INFO_METHODCONST, cmethod);
-					icall_args [2] = ins;
-				}
-
-				rgctx_reg = alloc_preg (cfg);
-				MONO_EMIT_NEW_PCONST (cfg, rgctx_reg, NULL);
-				EMIT_NEW_VARLOADA_VREG (cfg, icall_args [3], rgctx_reg, &mono_defaults.int_class->byval_arg);
-				//EMIT_NEW_PCONST (cfg, icall_args [3], NULL);
-
-				call_target = mono_emit_jit_icall (cfg, mono_resolve_iface_call, icall_args);
-
-				// FIXME: Only do this if needed (generic calls)
-
-				// Check whenever to pass an rgctx
-				MONO_EMIT_NEW_BIALU_IMM (cfg, OP_COMPARE_IMM, -1, rgctx_reg, 0);
-				MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_IBNE_UN, rgctx_bb);
-				/* Non rgctx case */
-				call1 = mono_emit_calli (cfg, fsig, sp, call_target, NULL, vtable_arg);
-				MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_BR, end_bb);
-				/* Rgctx case */
-				MONO_START_BB (cfg, rgctx_bb);
-				/* Make a call with an rgctx */
-				if (fsig->param_count + 2 < 16)
-					args = args_buf;
-				else
-					args = (MonoInst **)mono_mempool_alloc0 (cfg->mempool, sizeof (MonoInst*) * (fsig->param_count + 2));
-				args [0] = sp [0];
-				for (i = 0; i < fsig->param_count; ++i)
-					args [i + 1] = sp [i + 1];
-				tmp_reg = alloc_preg (cfg);
-				EMIT_NEW_UNALU (cfg, args [fsig->param_count + 1], OP_MOVE, tmp_reg, rgctx_reg);
-				rgctx_sig = sig_to_rgctx_sig (fsig);
-				call2 = mono_emit_calli (cfg, rgctx_sig, args, call_target, NULL, NULL);
-				call2->dreg = call1->dreg;
-				MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_BR, end_bb);
-				/* End */
-				MONO_START_BB (cfg, end_bb);
-				ins = call1;
+			if (cfg->llvm_only && virtual_ && cmethod && (cmethod->flags & METHOD_ATTRIBUTE_VIRTUAL)) {
+				ins = emit_llvmonly_virtual_call (cfg, cmethod, fsig, context_used, sp, imt_arg);
 				goto call_end;
 			}
 
@@ -12671,7 +12813,7 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 						}
 
 						/* FIXME: SGEN support */
-						if (invoke_context_used == 0) {
+						if (invoke_context_used == 0 || cfg->llvm_only) {
 							ip += 6;
 							if (cfg->verbose_level > 3)
 								g_print ("converting (in B%d: stack: %d) %s", cfg->cbb->block_num, (int)(sp - stack_start), mono_disasm_code_one (NULL, method, ip, NULL));
@@ -13858,6 +14000,11 @@ mono_handle_global_vregs (MonoCompile *cfg)
 			if (mono_arch_is_soft_float ())
 				break;
 
+			/*
+			if (var->type == STACK_VTYPE && cfg->gsharedvt && mini_is_gsharedvt_variable_type (var->inst_vtype))
+				break;
+			*/
+
 			/* Arguments are implicitly global */
 			/* Putting R4 vars into registers doesn't work currently */
 			/* The gsharedvt vars are implicitly referenced by ldaddr opcodes, but those opcodes are only generated later */
@@ -13946,6 +14093,39 @@ mono_handle_global_vregs (MonoCompile *cfg)
 		cfg->locals_start = cfg->num_varinfo;
 }
 
+/*
+ * mono_allocate_gsharedvt_vars:
+ *
+ *   Allocate variables with gsharedvt types to entries in the MonoGSharedVtMethodRuntimeInfo.entries array.
+ * Initialize cfg->gsharedvt_vreg_to_idx with the mapping between vregs and indexes.
+ */
+void
+mono_allocate_gsharedvt_vars (MonoCompile *cfg)
+{
+	int i;
+
+	cfg->gsharedvt_vreg_to_idx = (int *)mono_mempool_alloc0 (cfg->mempool, sizeof (int) * cfg->next_vreg);
+
+	for (i = 0; i < cfg->num_varinfo; ++i) {
+		MonoInst *ins = cfg->varinfo [i];
+		int idx;
+
+		if (mini_is_gsharedvt_variable_type (ins->inst_vtype)) {
+			if (i >= cfg->locals_start) {
+				/* Local */
+				idx = get_gsharedvt_info_slot (cfg, ins->inst_vtype, MONO_RGCTX_INFO_LOCAL_OFFSET);
+				cfg->gsharedvt_vreg_to_idx [ins->dreg] = idx + 1;
+				ins->opcode = OP_GSHAREDVT_LOCAL;
+				ins->inst_imm = idx;
+			} else {
+				/* Arg */
+				cfg->gsharedvt_vreg_to_idx [ins->dreg] = -1;
+				ins->opcode = OP_GSHAREDVT_ARG_REGOFFSET;
+			}
+		}
+	}
+}
+
 /**
  * mono_spill_global_vars:
  *
@@ -13966,7 +14146,6 @@ mono_spill_global_vars (MonoCompile *cfg, gboolean *need_local_opts)
 	MonoStackType stacktypes [128];
 	MonoInst **live_range_start, **live_range_end;
 	MonoBasicBlock **live_range_start_bb, **live_range_end_bb;
-	int *gsharedvt_vreg_to_idx = NULL;
 
 	*need_local_opts = FALSE;
 
@@ -14023,29 +14202,6 @@ mono_spill_global_vars (MonoCompile *cfg, gboolean *need_local_opts)
 
 			if (ins->opcode == OP_REGVAR)
 				ins->flags |= MONO_INST_GC_TRACK;
-		}
-	}
-
-	if (cfg->gsharedvt) {
-		gsharedvt_vreg_to_idx = (int *)mono_mempool_alloc0 (cfg->mempool, sizeof (int) * cfg->next_vreg);
-
-		for (i = 0; i < cfg->num_varinfo; ++i) {
-			MonoInst *ins = cfg->varinfo [i];
-			int idx;
-
-			if (mini_is_gsharedvt_variable_type (ins->inst_vtype)) {
-				if (i >= cfg->locals_start) {
-					/* Local */
-					idx = get_gsharedvt_info_slot (cfg, ins->inst_vtype, MONO_RGCTX_INFO_LOCAL_OFFSET);
-					gsharedvt_vreg_to_idx [ins->dreg] = idx + 1;
-					ins->opcode = OP_GSHAREDVT_LOCAL;
-					ins->inst_imm = idx;
-				} else {
-					/* Arg */
-					gsharedvt_vreg_to_idx [ins->dreg] = -1;
-					ins->opcode = OP_GSHAREDVT_ARG_REGOFFSET;
-				}
-			}
 		}
 	}
 		
@@ -14124,16 +14280,16 @@ mono_spill_global_vars (MonoCompile *cfg, gboolean *need_local_opts)
 						ins->inst_offset = vtaddr->inst_offset;
 					} else
 						NOT_IMPLEMENTED;
-				} else if (cfg->gsharedvt && gsharedvt_vreg_to_idx [var->dreg] < 0) {
+				} else if (cfg->gsharedvt && cfg->gsharedvt_vreg_to_idx [var->dreg] < 0) {
 					/* gsharedvt arg passed by ref */
 					g_assert (var->opcode == OP_GSHAREDVT_ARG_REGOFFSET);
 
 					ins->opcode = OP_LOAD_MEMBASE;
 					ins->inst_basereg = var->inst_basereg;
 					ins->inst_offset = var->inst_offset;
-				} else if (cfg->gsharedvt && gsharedvt_vreg_to_idx [var->dreg]) {
+				} else if (cfg->gsharedvt && cfg->gsharedvt_vreg_to_idx [var->dreg]) {
 					MonoInst *load, *load2, *load3;
-					int idx = gsharedvt_vreg_to_idx [var->dreg] - 1;
+					int idx = cfg->gsharedvt_vreg_to_idx [var->dreg] - 1;
 					int reg1, reg2, reg3;
 					MonoInst *info_var = cfg->gsharedvt_info_var;
 					MonoInst *locals_var = cfg->gsharedvt_locals_var;

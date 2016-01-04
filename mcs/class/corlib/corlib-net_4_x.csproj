@@ -166,6 +166,10 @@
     <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\contracts\contracts.cs" />
     <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\contracts\contractsbcl.cs" />
     <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\debuggerattributes.cs" />
+    <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\eventing\eventactivityoptions.cs" />
+    <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\eventing\TraceLogging\EventSourceOptions.cs" />
+    <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\eventing\TraceLogging\TraceLoggingEventTraits.cs" />
+    <Compile Include="..\..\..\external\referencesource\mscorlib\system\diagnostics\eventing\winmeta.cs" />
     <Compile Include="..\..\..\external\referencesource\mscorlib\system\dividebyzeroexception.cs" />
     <Compile Include="..\..\..\external\referencesource\mscorlib\system\dllnotfoundexception.cs" />
     <Compile Include="..\..\..\external\referencesource\mscorlib\system\double.cs" />
@@ -827,10 +831,9 @@
     <Compile Include="System.Diagnostics.Tracing\EventAttribute.cs" />
     <Compile Include="System.Diagnostics.Tracing\EventCommand.cs" />
     <Compile Include="System.Diagnostics.Tracing\EventCommandEventArgs.cs" />
-    <Compile Include="System.Diagnostics.Tracing\EventKeywords.cs" />
-    <Compile Include="System.Diagnostics.Tracing\EventLevel.cs" />
     <Compile Include="System.Diagnostics.Tracing\EventSource.cs" />
     <Compile Include="System.Diagnostics.Tracing\EventSourceAttribute.cs" />
+    <Compile Include="System.Diagnostics.Tracing\EventSourceSettings.cs" />
     <Compile Include="System.Diagnostics.Tracing\NonEventAttribute.cs" />
     <Compile Include="System.Diagnostics\Debugger.cs" />
     <Compile Include="System.Diagnostics\StackFrame.cs" />
@@ -1341,7 +1344,10 @@
     <Compile Include="System.Security.AccessControl\SystemAcl.cs" />
     <Compile Include="System.Security.Cryptography.X509Certificates\X509Certificate.cs" />
     <Compile Include="System.Security.Cryptography.X509Certificates\X509Certificate20.cs" />
+    <Compile Include="System.Security.Cryptography.X509Certificates\X509CertificateImpl.cs" />
+    <Compile Include="System.Security.Cryptography.X509Certificates\X509CertificateImplMono.cs" />
     <Compile Include="System.Security.Cryptography.X509Certificates\X509ContentType.cs" />
+    <Compile Include="System.Security.Cryptography.X509Certificates\X509Helper.cs" />
     <Compile Include="System.Security.Cryptography.X509Certificates\X509KeyStorageFlags.cs" />
     <Compile Include="System.Security.Cryptography\CryptoAPITransform.cs" />
     <Compile Include="System.Security.Cryptography\CryptoConfig.cs" />

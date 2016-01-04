@@ -879,6 +879,9 @@ ves_icall_System_Runtime_CompilerServices_RuntimeHelpers_RunClassConstructor (Mo
 	klass = mono_class_from_mono_type (handle);
 	MONO_CHECK_ARG (handle, klass,);
 
+	if (klass->generic_container)
+		return;
+
 	vtable = mono_class_vtable_full (mono_domain_get (), klass, TRUE);
 
 	/* This will call the type constructor */
@@ -5783,6 +5786,11 @@ ves_icall_Remoting_RealProxy_GetTransparentProxy (MonoObject *this_obj, MonoStri
 	type = ((MonoReflectionType *)rp->class_to_proxy)->type;
 	klass = mono_class_from_mono_type (type);
 
+	// mono_remote_class_vtable cannot handle errors well, so force any loading error to occur early
+	mono_class_setup_vtable (klass);
+	if (klass->exception_type)
+		mono_raise_exception (mono_class_get_exception_for_failure (klass));
+
 	tp->custom_type_info = (mono_object_isinst (this_obj, mono_defaults.iremotingtypeinfo_class) != NULL);
 	tp->remote_class = mono_remote_class (domain, class_name, klass);
 
@@ -5825,13 +5833,22 @@ ves_icall_System_Environment_get_MachineName (void)
 	g_free (buf);
 	return result;
 #elif !defined(DISABLE_SOCKETS)
-	gchar buf [256];
 	MonoString *result;
-
-	if (gethostname (buf, sizeof (buf)) == 0)
+	char *buf;
+	int n;
+#if defined _SC_HOST_NAME_MAX
+	n = sysconf (_SC_HOST_NAME_MAX);
+	if (n == -1)
+#endif
+	n = 512;
+	buf = g_malloc (n+1);
+	
+	if (gethostname (buf, n) == 0){
+		buf [n] = 0;
 		result = mono_string_new (mono_domain_get (), buf);
-	else
+	} else
 		result = NULL;
+	g_free (buf);
 	
 	return result;
 #else
