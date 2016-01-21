@@ -100,6 +100,10 @@
 #include "decimal-ms.h"
 #include "number-ms.h"
 
+#if !defined(HOST_WIN32) && defined(HAVE_SYS_UTSNAME_H)
+#include <sys/utsname.h>
+#endif
+
 extern MonoString* ves_icall_System_Environment_GetOSVersionString (void);
 
 ICALL_EXPORT MonoReflectionAssembly* ves_icall_System_Reflection_Assembly_GetCallingAssembly (void);
@@ -1925,14 +1929,6 @@ ves_icall_MonoField_ResolveType (MonoReflectionField *ref_field)
 	if (!mono_error_ok (&error))
 		mono_error_raise_exception (&error);
 	return mono_type_get_object (mono_object_domain (ref_field), type);
-}
-
-ICALL_EXPORT MonoReflectionType*
-ves_icall_MonoGenericMethod_get_ReflectedType (MonoReflectionGenericMethod *rmethod)
-{
-	MonoMethod *method = rmethod->method.method;
-
-	return mono_type_get_object (mono_object_domain (rmethod), &method->klass->byval_arg);
 }
 
 /* From MonoProperty.cs */
@@ -4565,6 +4561,9 @@ ves_icall_GetCurrentMethod (void)
 {
 	MonoMethod *m = mono_method_get_last_managed ();
 
+	if (!m)
+		mono_raise_exception (mono_get_exception_not_supported ("Stack walks are not supported on this platform."));
+
 	while (m->is_inflated)
 		m = ((MonoMethodInflated*)m)->declaring;
 
@@ -4667,6 +4666,8 @@ ves_icall_System_Reflection_Assembly_GetCallingAssembly (void)
 	mono_stack_walk_no_il (get_caller_no_reflection, &dest);
 	if (!dest)
 		dest = m;
+	if (!m)
+		mono_raise_exception (mono_get_exception_not_supported ("Stack walks are not supported on this platform."));
 	return mono_assembly_get_object (mono_domain_get (), dest->klass->image->assembly);
 }
 
@@ -5885,6 +5886,28 @@ ves_icall_System_Environment_get_NewLine (void)
 	return mono_string_new (mono_domain_get (), "\r\n");
 #else
 	return mono_string_new (mono_domain_get (), "\n");
+#endif
+}
+
+ICALL_EXPORT MonoBoolean
+ves_icall_System_Environment_GetIs64BitOperatingSystem (void)
+{
+#if SIZEOF_VOID_P == 8
+	return TRUE;
+#else
+#ifdef HOST_WIN32
+	gboolean isWow64Process = FALSE;
+	if (IsWow64Process (GetCurrentProcess (), &isWow64Process)) {
+		return (MonoBoolean)isWow64Process;
+	}
+#elif defined(HAVE_SYS_UTSNAME_H)
+	struct utsname name;
+
+	if (uname (&name) >= 0) {
+		return strcmp (name.machine, "x86_64") == 0 || strncmp (name.machine, "aarch64", 7) == 0 || strncmp (name.machine, "ppc64", 5) == 0;
+	}
+#endif
+	return FALSE;
 #endif
 }
 

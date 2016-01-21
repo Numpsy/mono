@@ -149,8 +149,7 @@ only supported by the ARM backend. In LLVM mode, this triple is passed on to the
 llc compiler.
 .TP
 .I nimt-trampolines=[number]
-When compiling in full aot mthis data at startup
-usingode, the IMT trampolines must be precreated
+When compiling in full aot mode, the IMT trampolines must be precreated
 in the AOT image.  You can add additional method trampolines with this argument.
 Defaults to 128.
 .TP
@@ -613,6 +612,16 @@ Currently this option is only supported on Linux.
 The maintainer options are only used by those developing the runtime
 itself, and not typically of interest to runtime users or developers.
 .TP
+\fB--bisect=optimization:filename\fR
+This flag is used by the automatic optimization bug bisector.  It
+takes an optimization flag and a filename of a file containing a list
+of full method names, one per line.  When it compiles one of the
+methods in the file it will use the optimization given, in addition to
+the optimizations that are otherwise enabled.  Note that if the
+optimization is enabled by default, you should disable it with `-O`,
+otherwise it will just apply to every method, whether it's in the file
+or not.
+.TP
 \fB--break method\fR
 Inserts a breakpoint before the method whose name is `method'
 (namespace.class:methodname).  Use `Main' as method name to insert a
@@ -879,7 +888,9 @@ environment variable to limit the extent of the messages you get:
 If set, the log mask is changed to the set value. Possible values are
 "asm" (assembly loader), "type", "dll" (native library loader), "gc"
 (garbage collector), "cfg" (config file loader), "aot" (precompiler),
-"security" (e.g. Moonlight CoreCLR support) and "all". 
+"security" (e.g. Moonlight CoreCLR support), "threadpool" (thread pool generic), 
+"io-threadpool" (thread pool I/O), "io-layer" (I/O layer - sockets, handles, shared memory etc) 
+and "all". 
 The default value is "all". Changing the mask value allows you to display only 
 messages for a certain component. You can use multiple masks by comma 
 separating them. For example to see config file messages and assembly loader
@@ -1715,7 +1726,7 @@ since a live process contains more information than a core file.
 This option will suspend the program when an exception occurs.
 .TP
 \fBsuspend-on-unhandled\fR
-This option will suspend the program when an unhadled exception occurs.
+This option will suspend the program when an unhandled exception occurs.
 .ne
 .RE
 .TP

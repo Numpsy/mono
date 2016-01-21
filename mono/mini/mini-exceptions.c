@@ -519,17 +519,22 @@ get_generic_info_from_stack_frame (MonoJitInfo *ji, MonoContext *ctx)
 
 	method = jinfo_get_method (ji);
 	if (mono_method_get_context (method)->method_inst) {
+		/* A MonoMethodRuntimeGenericContext* */
 		return info;
 	} else if ((method->flags & METHOD_ATTRIBUTE_STATIC) || method->klass->valuetype) {
+		/* A MonoVTable* */
 		return info;
 	} else {
 		/* Avoid returning a managed object */
 		MonoObject *this_obj = (MonoObject *)info;
 
-		return this_obj->vtable->klass;
+		return this_obj->vtable;
 	}
 }
 
+/*
+ * generic_info is either a MonoMethodRuntimeGenericContext or a MonoVTable.
+ */
 static MonoGenericContext
 get_generic_context_from_stack_frame (MonoJitInfo *ji, gpointer generic_info)
 {
@@ -547,12 +552,10 @@ get_generic_context_from_stack_frame (MonoJitInfo *ji, gpointer generic_info)
 		klass = mrgctx->class_vtable->klass;
 		context.method_inst = mrgctx->method_inst;
 		g_assert (context.method_inst);
-	} else if ((method->flags & METHOD_ATTRIBUTE_STATIC) || method->klass->valuetype) {
+	} else {
 		MonoVTable *vtable = (MonoVTable *)generic_info;
 
 		klass = vtable->klass;
-	} else {
-		klass = (MonoClass *)generic_info;
 	}
 
 	//g_assert (!method->klass->generic_container);
@@ -677,7 +680,7 @@ ves_icall_get_trace (MonoException *exc, gint32 skip, MonoBoolean need_file_info
 			char *s;
 
 			sf->method = NULL;
-			s = mono_method_get_name_full (method, TRUE, MONO_TYPE_NAME_FORMAT_REFLECTION);
+			s = mono_method_get_name_full (method, TRUE, FALSE, MONO_TYPE_NAME_FORMAT_REFLECTION);
 			MONO_OBJECT_SETREF (sf, internal_method_name, mono_string_new (domain, s));
 			g_free (s);
 		}
@@ -2831,29 +2834,33 @@ mono_llvm_load_exception (void)
 	MonoJitTlsData *jit_tls = mono_get_jit_tls ();
 
 	MonoException *mono_ex = (MonoException*)mono_gchandle_get_target (jit_tls->thrown_exc);
-	g_assert (mono_ex->trace_ips);
 
-	GList *trace_ips = NULL;
-	gpointer ip = __builtin_return_address (0);
+	if (mono_ex->trace_ips) {
+		GList *trace_ips = NULL;
+		gpointer ip = __builtin_return_address (0);
 
-	size_t upper = mono_array_length (mono_ex->trace_ips);
+		size_t upper = mono_array_length (mono_ex->trace_ips);
 
-	for (int i = 0; i < upper; i++) {
-		gpointer curr_ip = mono_array_get (mono_ex->trace_ips, gpointer, i);
-		trace_ips = g_list_prepend (trace_ips, curr_ip);
+		for (int i = 0; i < upper; i++) {
+			gpointer curr_ip = mono_array_get (mono_ex->trace_ips, gpointer, i);
+			trace_ips = g_list_prepend (trace_ips, curr_ip);
 
-		if (ip == curr_ip)
-			break;
+			if (ip == curr_ip)
+				break;
+		}
+
+		// FIXME: Does this work correctly for rethrows?
+		// We may be discarding useful information
+		// when this gets GC'ed
+		MONO_OBJECT_SETREF (mono_ex, trace_ips, mono_glist_to_array (trace_ips, mono_defaults.int_class));
+		g_list_free (trace_ips);
+
+		// FIXME:
+		//MONO_OBJECT_SETREF (mono_ex, stack_trace, ves_icall_System_Exception_get_trace (mono_ex));
+	} else {
+		MONO_OBJECT_SETREF (mono_ex, trace_ips, mono_array_new (mono_domain_get (), mono_defaults.int_class, 0));
+		MONO_OBJECT_SETREF (mono_ex, stack_trace, mono_array_new (mono_domain_get (), mono_defaults.stack_frame_class, 0));
 	}
-
-	// FIXME: Does this work correctly for rethrows?
-	// We may be discarding useful information
-	// when this gets GC'ed
-	MONO_OBJECT_SETREF (mono_ex, trace_ips, mono_glist_to_array (trace_ips, mono_defaults.int_class));
-	g_list_free (trace_ips);
-
-	// FIXME:
-	//MONO_OBJECT_SETREF (mono_ex, stack_trace, ves_icall_System_Exception_get_trace (mono_ex));
 
 	return &mono_ex->object;
 }
@@ -2880,7 +2887,7 @@ mono_llvm_clear_exception (void)
  * the current exception.
  */
 gint32
-mono_llvm_match_exception (MonoJitInfo *jinfo, guint32 region_start, guint32 region_end)
+mono_llvm_match_exception (MonoJitInfo *jinfo, guint32 region_start, guint32 region_end, gpointer rgctx, MonoObject *this_obj)
 {
 	MonoJitTlsData *jit_tls = mono_get_jit_tls ();
 	MonoObject *exc;
@@ -2890,12 +2897,25 @@ mono_llvm_match_exception (MonoJitInfo *jinfo, guint32 region_start, guint32 reg
 	exc = mono_gchandle_get_target (jit_tls->thrown_exc);
 	for (int i = 0; i < jinfo->num_clauses; i++) {
 		MonoJitExceptionInfo *ei = &jinfo->clauses [i];
+		MonoClass *catch_class;
 
 		if (! (ei->try_offset == region_start && ei->try_offset + ei->try_len == region_end) )
 			continue;
 
+		catch_class = ei->data.catch_class;
+		if (catch_class->byval_arg.type == MONO_TYPE_VAR || catch_class->byval_arg.type == MONO_TYPE_MVAR || catch_class->byval_arg.type == MONO_TYPE_GENERICINST) {
+			MonoGenericContext context;
+			MonoType *inflated_type;
+
+			g_assert (rgctx || this_obj);
+			context = get_generic_context_from_stack_frame (jinfo, rgctx ? rgctx : this_obj->vtable);
+			inflated_type = mono_class_inflate_generic_type (&catch_class->byval_arg, &context);
+			catch_class = mono_class_from_mono_type (inflated_type);
+			mono_metadata_free_type (inflated_type);
+		}
+
 		// FIXME: Handle edge cases handled in get_exception_catch_class
-		if (ei->flags == MONO_EXCEPTION_CLAUSE_NONE && mono_object_isinst (exc, ei->data.catch_class)) {
+		if (ei->flags == MONO_EXCEPTION_CLAUSE_NONE && mono_object_isinst (exc, catch_class)) {
 			index = ei->clause_index;
 			break;
 		} else if (ei->flags == MONO_EXCEPTION_CLAUSE_FILTER) {

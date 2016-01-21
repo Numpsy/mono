@@ -81,7 +81,7 @@ translate_backtrace (gpointer native_trace[], int size)
 
 typedef struct {
 	GPtrArray *transitions;
-	gboolean in_gc_critical_region;
+	guint32 in_gc_critical_region;
 } CheckState;
 
 typedef struct {
@@ -235,7 +235,7 @@ void *
 critical_gc_region_begin(void)
 {
 	CheckState *state = get_state ();
-	state->in_gc_critical_region = TRUE;
+	state->in_gc_critical_region++;
 	return state;
 }
 
@@ -245,18 +245,24 @@ critical_gc_region_end(void* token)
 {
 	CheckState *state = get_state();
 	g_assert (state == token);
-	state->in_gc_critical_region = FALSE;
+	state->in_gc_critical_region--;
 }
 
 void
 assert_not_in_gc_critical_region(void)
 {
 	CheckState *state = get_state();
-	if (state->in_gc_critical_region) {
-		MonoThreadInfo *cur = mono_thread_info_current();
-		state = mono_thread_info_current_state(cur);
-		assertion_fail("Expected GC Unsafe mode, but was in %s state", mono_thread_state_name(state));
+	if (state->in_gc_critical_region > 0) {
+		assertion_fail("Expected GC Unsafe mode, but was in %s state", mono_thread_state_name (mono_thread_info_current_state (mono_thread_info_current ())));
 	}
+}
+
+void
+assert_in_gc_critical_region (void)
+{
+	CheckState *state = get_state();
+	if (state->in_gc_critical_region == 0)
+		assertion_fail("Expected GC critical region");
 }
 
 // check_metadata_store et al: The goal of these functions is to verify that if there is a pointer from one mempool into
@@ -431,6 +437,12 @@ check_image_set_may_reference_image_set (MonoImageSet *from, MonoImageSet *to)
 	for (to_idx = 0; valid && to_idx < to->nimages; to_idx++)
 	{
 		gboolean seen = FALSE;
+
+		// If TO set includes corlib, the FROM set may
+		// implicitly reference corlib, even if it's not
+		// present in the set explicitly.
+		if (to->images[to_idx] == mono_defaults.corlib)
+			seen = TRUE;
 
 		// For each item in to->images, scan over from->images looking for it.
 		for (from_idx = 0; !seen && from_idx < from->nimages; from_idx++)
