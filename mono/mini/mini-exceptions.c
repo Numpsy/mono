@@ -193,6 +193,18 @@ mono_get_throw_corlib_exception (void)
 	return throw_corlib_exception_func;
 }
 
+/*
+ * mono_get_throw_exception_addr:
+ *
+ *   Return an address which stores the result of
+ * mono_get_throw_exception.
+ */
+gpointer
+mono_get_throw_exception_addr (void)
+{
+	return &throw_exception_func;
+}
+
 static gboolean
 is_address_protected (MonoJitInfo *ji, MonoJitExceptionInfo *ei, gpointer ip)
 {
@@ -447,16 +459,17 @@ mono_find_jit_info_ext (MonoDomain *domain, MonoJitTlsData *jit_tls,
 		const char *real_ip, *start;
 
 		start = (const char *)ji->code_start;
-		if (!frame->managed)
+		if (frame->type == FRAME_TYPE_MANAGED)
+			real_ip = (const char*)ip;
+		else
 			/* ctx->ip points into native code */
 			real_ip = (const char*)MONO_CONTEXT_GET_IP (new_ctx);
-		else
-			real_ip = (const char*)ip;
 
 		if ((real_ip >= start) && (real_ip <= start + ji->code_size))
 			frame->native_offset = real_ip - start;
-		else
+		else {
 			frame->native_offset = -1;
+		}
 
 		if (trace)
 			*trace = mono_debug_print_stack_frame (method, frame->native_offset, domain);

@@ -47,6 +47,7 @@
 #include <mono/metadata/mempool-internals.h>
 #include <mono/metadata/attach.h>
 #include <mono/metadata/runtime.h>
+#include <mono/metadata/reflection-internals.h>
 #include <mono/utils/mono-math.h>
 #include <mono/utils/mono-compiler.h>
 #include <mono/utils/mono-counters.h>
@@ -1566,8 +1567,9 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 		mono_class_init (handle_class);
 		mono_class_init (mono_class_from_mono_type ((MonoType *)handle));
 
-		target =
-			mono_type_get_object (domain, (MonoType *)handle);
+		target = mono_type_get_object_checked (domain, (MonoType *)handle, &error);
+		mono_error_raise_exception (&error);
+
 		break;
 	}
 	case MONO_PATCH_INFO_LDTOKEN: {
@@ -2287,15 +2289,14 @@ create_runtime_invoke_info (MonoDomain *domain, MonoMethod *method, gpointer com
 #ifndef ENABLE_GSHAREDVT
 			g_assert_not_reached ();
 #endif
+			info->gsharedvt_invoke = TRUE;
 			if (!callee_gsharedvt) {
 				/* Invoke a gsharedvt out wrapper instead */
 				MonoMethod *wrapper = mini_get_gsharedvt_out_sig_wrapper (sig);
 				MonoMethodSignature *wrapper_sig = mini_get_gsharedvt_out_sig_wrapper_signature (sig->hasthis, sig->ret->type != MONO_TYPE_VOID, sig->param_count);
 
-				info->gsharedvt_invoke = TRUE;
 				info->wrapper_arg = g_malloc0 (2 * sizeof (gpointer));
-				info->wrapper_arg [0] = info->compiled_method;
-				info->wrapper_arg [1] = mono_method_needs_static_rgctx_invoke (method, TRUE) ? mini_method_get_rgctx (method) : NULL;
+				info->wrapper_arg [0] = mini_add_method_wrappers_llvmonly (method, info->compiled_method, FALSE, FALSE, &(info->wrapper_arg [1]));
 
 				/* Pass has_rgctx == TRUE since the wrapper has an extra arg */
 				invoke = mono_marshal_get_runtime_invoke_for_sig (wrapper_sig);
@@ -2307,7 +2308,6 @@ create_runtime_invoke_info (MonoDomain *domain, MonoMethod *method, gpointer com
 				/* The out wrapper has the same signature as the compiled gsharedvt method */
 				MonoMethodSignature *wrapper_sig = mini_get_gsharedvt_out_sig_wrapper_signature (sig->hasthis, sig->ret->type != MONO_TYPE_VOID, sig->param_count);
 
-				info->gsharedvt_invoke = TRUE;
 				info->wrapper_arg = mono_method_needs_static_rgctx_invoke (method, TRUE) ? mini_method_get_rgctx (method) : NULL;
 
 				invoke = mono_marshal_get_runtime_invoke_for_sig (wrapper_sig);
@@ -3031,26 +3031,32 @@ is_callee_gsharedvt_variable (gpointer addr)
 	return callee_gsharedvt;
 }
 
+gpointer
+mini_get_delegate_arg (MonoMethod *method, gpointer method_ptr)
+{
+	gpointer arg = NULL;
+
+	if (mono_method_needs_static_rgctx_invoke (method, FALSE))
+		arg = mini_method_get_rgctx (method);
+
+	/*
+	 * Avoid adding gsharedvt in wrappers since they might not exist if
+	 * this delegate is called through a gsharedvt delegate invoke wrapper.
+	 * Instead, encode that the method is gsharedvt in del->extra_arg,
+	 * the CEE_MONO_CALLI_EXTRA_ARG implementation in the JIT depends on this.
+	 */
+	if (method->is_inflated && is_callee_gsharedvt_variable (method_ptr)) {
+		g_assert ((((mgreg_t)arg) & 1) == 0);
+		arg = (gpointer)(((mgreg_t)arg) | 1);
+	}
+	return arg;
+}
+
 void
 mini_init_delegate (MonoDelegate *del)
 {
-	if (mono_llvm_only) {
-		MonoMethod *method = del->method;
-
-		if (mono_method_needs_static_rgctx_invoke (method, FALSE))
-			del->rgctx = mini_method_get_rgctx (method);
-
-		/*
-		 * Avoid adding gsharedvt in wrappers since they might not exist if
-		 * this delegate is called through a gsharedvt delegate invoke wrapper.
-		 * Instead, encode that the method is gsharedvt in del->rgctx,
-		 * the CEE_MONO_CALLI_EXTRA_ARG implementation in the JIT depends on this.
-		 */
-		if (is_callee_gsharedvt_variable (del->method_ptr)) {
-			g_assert ((((mgreg_t)del->rgctx) & 1) == 0);
-			del->rgctx = (gpointer)(((mgreg_t)del->rgctx) | 1);
-		}
-	}
+	if (mono_llvm_only)
+		del->extra_arg = mini_get_delegate_arg (del->method, del->method_ptr);
 }
 
 gpointer
@@ -3710,7 +3716,6 @@ register_icalls (void)
 	register_icall (mono_thread_get_undeniable_exception, "mono_thread_get_undeniable_exception", "object", FALSE);
 	register_icall (mono_thread_interruption_checkpoint, "mono_thread_interruption_checkpoint", "object", FALSE);
 	register_icall (mono_thread_force_interruption_checkpoint_noraise, "mono_thread_force_interruption_checkpoint_noraise", "object", FALSE);
-	register_icall (mono_thread_force_interruption_checkpoint, "mono_thread_force_interruption_checkpoint", "void", FALSE);
 #ifndef DISABLE_REMOTING
 	register_icall (mono_load_remote_field_new, "mono_load_remote_field_new", "object object ptr ptr", FALSE);
 	register_icall (mono_store_remote_field_new, "mono_store_remote_field_new", "void object ptr ptr object", FALSE);
@@ -3861,9 +3866,9 @@ register_icalls (void)
 	register_icall (mono_ldstr, "mono_ldstr", "object ptr ptr int32", FALSE);
 	register_icall (mono_helper_stelem_ref_check, "mono_helper_stelem_ref_check", "void object object", FALSE);
 	register_icall (mono_object_new, "mono_object_new", "object ptr ptr", FALSE);
-	register_icall (mono_object_new_specific, "mono_object_new_specific", "object ptr", FALSE);
+	register_icall (ves_icall_object_new_specific, "ves_icall_object_new_specific", "object ptr", FALSE);
 	register_icall (mono_array_new, "mono_array_new", "object ptr ptr int32", FALSE);
-	register_icall (mono_array_new_specific, "mono_array_new_specific", "object ptr int32", FALSE);
+	register_icall (ves_icall_array_new_specific, "ves_icall_array_new_specific", "object ptr int32", FALSE);
 	register_icall (mono_runtime_class_init, "mono_runtime_class_init", "void ptr", FALSE);
 	register_icall (mono_ldftn, "mono_ldftn", "ptr ptr", FALSE);
 	register_icall (mono_ldvirtfn, "mono_ldvirtfn", "ptr object ptr", FALSE);
@@ -3910,7 +3915,7 @@ register_icalls (void)
 	register_icall_no_wrapper (mono_llvmonly_get_calling_assembly, "mono_llvmonly_get_calling_assembly", "object");
 	/* This needs a wrapper so it can have a preserveall cconv */
 	register_icall (mono_init_vtable_slot, "mono_init_vtable_slot", "ptr ptr int", FALSE);
-	register_icall (mono_llvmonly_init_delegate, "mono_llvmonly_init_delegate", "void object object ptr", TRUE);
+	register_icall (mono_llvmonly_init_delegate, "mono_llvmonly_init_delegate", "void object", TRUE);
 	register_icall (mono_llvmonly_init_delegate_virtual, "mono_llvmonly_init_delegate_virtual", "void object object ptr", TRUE);
 	register_icall (mono_get_assembly_object, "mono_get_assembly_object", "object ptr", TRUE);
 	register_icall (mono_get_method_object, "mono_get_method_object", "object ptr", TRUE);

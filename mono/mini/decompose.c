@@ -1521,7 +1521,7 @@ mono_decompose_array_access_opts (MonoCompile *cfg)
 						if (managed_alloc)
 							dest = mono_emit_method_call (cfg, managed_alloc, iargs, NULL);
 						else
-							dest = mono_emit_jit_icall (cfg, mono_array_new_specific, iargs);
+							dest = mono_emit_jit_icall (cfg, ves_icall_array_new_specific, iargs);
 						dest->dreg = ins->dreg;
 					}
 					break;
@@ -1936,7 +1936,8 @@ mono_local_emulate_ops (MonoCompile *cfg)
 	 * at IR level, instead of inlining the icall wrapper. FIXME
 	 */
 	if (inlined_wrapper) {
-		mono_decompose_long_opts (cfg);
+		if (!COMPILE_LLVM (cfg))
+			mono_decompose_long_opts (cfg);
 		if (cfg->opt & (MONO_OPT_CONSPROP | MONO_OPT_COPYPROP))
 			mono_local_cprop (cfg);
 	}

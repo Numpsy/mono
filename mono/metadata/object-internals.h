@@ -11,6 +11,7 @@
 #include <mono/io-layer/io-layer.h>
 #include "mono/utils/mono-compiler.h"
 #include "mono/utils/mono-error.h"
+#include "mono/utils/mono-error-internals.h"
 #include "mono/utils/mono-stack-unwinding.h"
 #include "mono/utils/mono-tls.h"
 #include "mono/utils/mono-coop-mutex.h"
@@ -127,7 +128,12 @@
 			}; \
 			tmp_klass; })
 /* eclass should be a run-time constant */
-#define mono_array_new_cached(domain, eclass, size) mono_array_new_specific (mono_class_vtable ((domain), mono_array_class_get_cached ((eclass), 1)), (size))
+#define mono_array_new_cached(domain, eclass, size) ({	\
+			MonoError __error;	\
+			MonoVTable *__vtable = mono_class_vtable ((domain), mono_array_class_get_cached ((eclass), 1));	\
+			MonoArray *__arr = mono_array_new_specific_checked (__vtable, (size), &__error);	\
+			mono_error_raise_exception (&__error); /* FIXME don't raise here */	\
+			__arr; })
 
 #else
 
@@ -786,7 +792,8 @@ struct _MonoDelegate {
 	MonoObject *target;
 	MonoMethod *method;
 	gpointer delegate_trampoline;
-	gpointer rgctx;
+	/* Extra argument passed to the target method in llvmonly mode */
+	gpointer extra_arg;
 	/* 
 	 * If non-NULL, this points to a memory location which stores the address of 
 	 * the compiled code of the method, or NULL if it is not yet compiled.
@@ -1485,6 +1492,15 @@ mono_array_full_copy (MonoArray *src, MonoArray *dest);
 gboolean
 mono_array_calc_byte_len (MonoClass *klass, uintptr_t len, uintptr_t *res);
 
+MonoArray*
+mono_array_new_full_checked (MonoDomain *domain, MonoClass *array_class, uintptr_t *lengths, intptr_t *lower_bounds, MonoError *error);
+
+MonoArray*
+mono_array_new_specific_checked (MonoVTable *vtable, uintptr_t n, MonoError *error);
+
+MonoArray*
+ves_icall_array_new_specific (MonoVTable *vtable, uintptr_t n);
+
 #ifndef DISABLE_REMOTING
 MonoObject *
 mono_remoting_invoke	    (MonoObject *real_proxy, MonoMethodMessage *msg, 
@@ -1610,7 +1626,16 @@ void
 mono_class_free_ref_info (MonoClass *klass);
 
 MonoObject *
-mono_object_new_pinned (MonoDomain *domain, MonoClass *klass);
+mono_object_new_pinned (MonoDomain *domain, MonoClass *klass, MonoError *error);
+
+MonoObject *
+mono_object_new_specific_checked (MonoVTable *vtable, MonoError *error);
+
+MonoObject *
+ves_icall_object_new_specific (MonoVTable *vtable);
+
+MonoObject *
+mono_object_new_alloc_specific_checked (MonoVTable *vtable, MonoError *error);
 
 void
 mono_field_static_get_value_for_thread (MonoInternalThread *thread, MonoVTable *vt, MonoClassField *field, void *value);
@@ -1653,7 +1678,19 @@ MonoArray *
 mono_glist_to_array (GList *list, MonoClass *eclass);
 
 MonoObject*
-mono_object_new_mature (MonoVTable *vtable);
+mono_object_new_mature (MonoVTable *vtable, MonoError *error);
+
+MonoObject*
+mono_object_new_fast_checked (MonoVTable *vtable, MonoError *error);
+
+MonoObject *
+ves_icall_object_new_fast (MonoVTable *vtable);
+
+MonoObject *
+mono_object_clone_checked (MonoObject *obj, MonoError *error);
+
+MonoString *
+mono_string_new_size_checked (MonoDomain *domain, gint32 len, MonoError *error);
 
 #endif /* __MONO_OBJECT_INTERNALS_H__ */
 

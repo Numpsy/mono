@@ -2594,6 +2594,7 @@ void              mono_allocate_gsharedvt_vars (MonoCompile *cfg);
 void              mono_if_conversion (MonoCompile *cfg);
 
 /* Delegates */
+gpointer          mini_get_delegate_arg (MonoMethod *method, gpointer method_ptr);
 void              mini_init_delegate (MonoDelegate *del);
 gpointer          mono_get_delegate_virtual_invoke_impl  (MonoMethodSignature *sig, MonoMethod *method);
 
@@ -2826,7 +2827,7 @@ gpointer mono_get_call_filter                   (void);
 gpointer mono_get_restore_context               (void);
 gpointer mono_get_throw_exception_by_name       (void);
 gpointer mono_get_throw_corlib_exception        (void);
-
+gpointer mono_get_throw_exception_addr          (void);
 MonoArray *ves_icall_get_trace                  (MonoException *exc, gint32 skip, MonoBoolean need_file_info);
 MonoBoolean ves_icall_get_frame_info            (gint32 skip, MonoBoolean need_file_info, 
 						 MonoReflectionMethod **method, 

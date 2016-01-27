@@ -2740,6 +2740,8 @@ emit_unbox_tramp (EmitContext *ctx, const char *method_name, LLVMTypeRef method_
 	tramp_name = g_strdup_printf ("ut_%s", method_name);
 	tramp = LLVMAddFunction (ctx->module->lmodule, tramp_name, method_type);
 	LLVMSetLinkage (tramp, LLVMInternalLinkage);
+	LLVMAddFunctionAttr (tramp, LLVMOptimizeForSizeAttribute);
+	//LLVMAddFunctionAttr (tramp, LLVMNoUnwindAttribute);
 	linfo = ctx->linfo;
 	// FIXME: Reduce code duplication with mono_llvm_compile_method () etc.
 	if (!ctx->llvm_only && ctx->rgctx_arg_pindex != -1)
@@ -2774,6 +2776,7 @@ emit_unbox_tramp (EmitContext *ctx, const char *method_name, LLVMTypeRef method_
 	if (linfo->ret.storage == LLVMArgVtypeByRef)
 		LLVMAddInstrAttribute (call, 1 + linfo->vret_arg_pindex, LLVMStructRetAttribute);
 
+	// FIXME: This causes assertions in clang
 	//mono_llvm_set_must_tail (call);
 	if (LLVMGetReturnType (method_type) == LLVMVoidType ())
 		LLVMBuildRetVoid (builder);
@@ -4354,7 +4357,8 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 		case OP_FCLT_UN:
 		case OP_FCGT:
 		case OP_FCGT_UN:
-		case OP_FCGE: {
+		case OP_FCGE:
+		case OP_FCLE: {
 			CompRelation rel;
 			LLVMValueRef cmp;
 
