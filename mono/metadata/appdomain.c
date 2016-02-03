@@ -158,6 +158,7 @@ mono_runtime_get_no_exec (void)
 static void
 create_domain_objects (MonoDomain *domain)
 {
+	MonoError error;
 	MonoDomain *old_domain = mono_domain_get ();
 	MonoString *arg;
 	MonoVTable *string_vt;
@@ -193,7 +194,8 @@ create_domain_objects (MonoDomain *domain)
 	domain->stack_overflow_ex = mono_exception_from_name_two_strings (mono_defaults.corlib, "System", "StackOverflowException", arg, NULL);
 
 	/*The ephemeron tombstone i*/
-	domain->ephemeron_tombstone = mono_object_new (domain, mono_defaults.object_class);
+	domain->ephemeron_tombstone = mono_object_new_checked (domain, mono_defaults.object_class, &error);
+	mono_error_assert_ok (&error);
 
 	if (domain != old_domain) {
 		mono_thread_pop_appdomain_ref ();
@@ -403,7 +405,8 @@ mono_domain_create_appdomain (char *friendly_name, char *configuration_file)
 	MonoClass *klass;
 
 	klass = mono_class_from_name (mono_defaults.corlib, "System", "AppDomainSetup");
-	setup = (MonoAppDomainSetup *) mono_object_new (mono_domain_get (), klass);
+	setup = (MonoAppDomainSetup *) mono_object_new_checked (mono_domain_get (), klass, &error);
+	mono_error_raise_exception (&error); /* FIXME don't raise here */
 	setup->configuration_file = configuration_file != NULL ? mono_string_new (mono_domain_get (), configuration_file) : NULL;
 
 	ad = mono_domain_create_appdomain_internal (friendly_name, setup, &error);
@@ -434,9 +437,11 @@ mono_domain_set_config (MonoDomain *domain, const char *base_dir, const char *co
 static MonoAppDomainSetup*
 copy_app_domain_setup (MonoDomain *domain, MonoAppDomainSetup *setup)
 {
+	MonoError error;
 	MonoDomain *caller_domain = mono_domain_get ();
 	MonoClass *ads_class = mono_class_from_name (mono_defaults.corlib, "System", "AppDomainSetup");
-	MonoAppDomainSetup *copy = (MonoAppDomainSetup*)mono_object_new (domain, ads_class);
+	MonoAppDomainSetup *copy = (MonoAppDomainSetup*)mono_object_new_checked (domain, ads_class, &error);
+	mono_error_raise_exception (&error); /* FIXME don't raise here */
 
 	mono_domain_set_internal (domain);
 
@@ -479,7 +484,8 @@ mono_domain_create_appdomain_internal (char *friendly_name, MonoAppDomainSetup *
 	/* FIXME: pin all those objects */
 	data = mono_domain_create();
 
-	ad = (MonoAppDomain *) mono_object_new (data, adclass);
+	ad = (MonoAppDomain *) mono_object_new_checked (data, adclass, error);
+	if (!mono_error_ok (error)) return NULL;
 	ad->data = data;
 	data->domain = ad;
 	data->friendly_name = g_strdup (friendly_name);
@@ -489,8 +495,11 @@ mono_domain_create_appdomain_internal (char *friendly_name, MonoAppDomainSetup *
 	if (!setup->application_base) {
 		/* Inherit from the root domain since MS.NET does this */
 		MonoDomain *root = mono_get_root_domain ();
-		if (root->setup->application_base)
-			MONO_OBJECT_SETREF (setup, application_base, mono_string_new_utf16 (data, mono_string_chars (root->setup->application_base), mono_string_length (root->setup->application_base)));
+		if (root->setup->application_base) {
+			MonoString *s = mono_string_new_utf16_checked (data, mono_string_chars (root->setup->application_base), mono_string_length (root->setup->application_base), error);
+			mono_error_assert_ok (error); /* FIXME don't swallow the error */
+			MONO_OBJECT_SETREF (setup, application_base, s);
+		}
 	}
 
 	mono_context_init (data);
@@ -1342,8 +1351,8 @@ get_shadow_assembly_location_base (MonoDomain *domain, MonoError *error)
 	setup = domain->setup;
 	if (setup->cache_path != NULL && setup->application_name != NULL) {
 		cache_path = mono_string_to_utf8_checked (setup->cache_path, error);
-		if (!mono_error_ok (error))
-			return NULL;
+		return_val_if_nok (error, NULL);
+
 #ifndef TARGET_WIN32
 		{
 			gint i;
@@ -2185,7 +2194,11 @@ ves_icall_System_AppDomain_InternalGetProcessGuid (MonoString* newguid)
 	mono_domain_lock (mono_root_domain);
 	if (process_guid_set) {
 		mono_domain_unlock (mono_root_domain);
-		return mono_string_new_utf16 (mono_domain_get (), process_guid, sizeof(process_guid)/2);
+		MonoError error;
+		MonoString *res = NULL;
+		res = mono_string_new_utf16_checked (mono_domain_get (), process_guid, sizeof(process_guid)/2, &error);
+		mono_error_raise_exception (&error);
+		return res;
 	}
 	memcpy (process_guid, mono_string_chars(newguid), sizeof(process_guid));
 	process_guid_set = TRUE;

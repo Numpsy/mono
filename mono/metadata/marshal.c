@@ -424,6 +424,7 @@ parse_unmanaged_function_pointer_attr (MonoClass *klass, MonoMethodPInvoke *piin
 MonoDelegate*
 mono_ftnptr_to_delegate (MonoClass *klass, gpointer ftn)
 {
+	MonoError error;
 	guint32 gchandle;
 	MonoDelegate *d;
 
@@ -478,7 +479,8 @@ mono_ftnptr_to_delegate (MonoClass *klass, gpointer ftn)
 			g_free (sig);
 		}
 
-		d = (MonoDelegate*)mono_object_new (mono_domain_get (), klass);
+		d = (MonoDelegate*)mono_object_new_checked (mono_domain_get (), klass, &error);
+		mono_error_raise_exception (&error); /* FIXME don't raise here */
 		mono_delegate_ctor_with_method ((MonoObject*)d, this_obj, mono_compile_method (wrapper), wrapper);
 	}
 
@@ -542,6 +544,8 @@ mono_string_from_byvalstr (const char *data, int max_len)
 static MonoString *
 mono_string_from_byvalwstr (gunichar2 *data, int max_len)
 {
+	MonoError error;
+	MonoString *res = NULL;
 	MonoDomain *domain = mono_domain_get ();
 	int len = 0;
 
@@ -550,7 +554,9 @@ mono_string_from_byvalwstr (gunichar2 *data, int max_len)
 
 	while (data [len]) len++;
 
-	return mono_string_new_utf16 (domain, data, MIN (len, max_len));
+	res = mono_string_new_utf16_checked (domain, data, MIN (len, max_len), &error);
+	mono_error_raise_exception (&error);
+	return res;
 }
 
 gpointer
@@ -704,6 +710,7 @@ mono_array_to_byte_byvalarray (gpointer native_arr, MonoArray *arr, guint32 elnu
 static MonoStringBuilder *
 mono_string_builder_new (int starting_string_length)
 {
+	MonoError error;
 	static MonoClass *string_builder_class;
 	static MonoMethod *sb_ctor;
 	static void *args [1];
@@ -730,9 +737,9 @@ mono_string_builder_new (int starting_string_length)
 	// array will always be garbage collected.
 	args [0] = &initial_len;
 
-	MonoStringBuilder *sb = (MonoStringBuilder*)mono_object_new (mono_domain_get (), string_builder_class);
+	MonoStringBuilder *sb = (MonoStringBuilder*)mono_object_new_checked (mono_domain_get (), string_builder_class, &error);
 	MonoObject *exc;
-	g_assert (sb);
+	g_assert (sb && mono_error_ok (&error)); /* FIXME don't swallow the error */
 
 	mono_runtime_invoke (sb_ctor, sb, args, &exc);
 	g_assert (!exc);
@@ -2778,6 +2785,7 @@ mono_marshal_get_delegate_begin_invoke (MonoMethod *method)
 static MonoObject *
 mono_delegate_end_invoke (MonoDelegate *delegate, gpointer *params)
 {
+	MonoError error;
 	MonoDomain *domain = mono_domain_get ();
 	MonoAsyncResult *ares;
 	MonoMethod *method = NULL;
@@ -2791,7 +2799,9 @@ mono_delegate_end_invoke (MonoDelegate *delegate, gpointer *params)
 
 	if (!delegate->method_info) {
 		g_assert (delegate->method);
-		MONO_OBJECT_SETREF (delegate, method_info, mono_method_get_object (domain, delegate->method, NULL));
+		MonoReflectionMethod *rm = mono_method_get_object_checked (domain, delegate->method, NULL, &error);
+		mono_error_raise_exception (&error); /* FIXME don't raise here */
+		MONO_OBJECT_SETREF (delegate, method_info, rm);
 	}
 
 	if (!delegate->method_info || !delegate->method_info->method)
@@ -2821,7 +2831,8 @@ mono_delegate_end_invoke (MonoDelegate *delegate, gpointer *params)
 #ifndef DISABLE_REMOTING
 	if (delegate->target && mono_object_is_transparent_proxy (delegate->target)) {
 		MonoTransparentProxy* tp = (MonoTransparentProxy *)delegate->target;
-		msg = (MonoMethodMessage *)mono_object_new (domain, mono_defaults.mono_method_message_class);
+		msg = (MonoMethodMessage *)mono_object_new_checked (domain, mono_defaults.mono_method_message_class, &error);
+		mono_error_raise_exception (&error); /* FIXME don't raise here */
 		mono_message_init (domain, msg, delegate->method_info, NULL);
 		msg->call_type = CallType_EndInvoke;
 		MONO_OBJECT_SETREF (msg, async_result, ares);
@@ -8155,6 +8166,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 gpointer
 mono_marshal_get_vtfixup_ftnptr (MonoImage *image, guint32 token, guint16 type)
 {
+	MonoError error;
 	MonoMethod *method;
 	MonoMethodSignature *sig;
 	MonoMethodBuilder *mb;
@@ -8162,7 +8174,9 @@ mono_marshal_get_vtfixup_ftnptr (MonoImage *image, guint32 token, guint16 type)
 
 	g_assert (token);
 
-	method = mono_get_method (image, token, NULL);
+	method = mono_get_method_checked (image, token, NULL, NULL, &error);
+	if (!method)
+		g_error ("Could not load vtfixup token 0x%x due to %s", token, mono_error_get_message (&error));
 	g_assert (method);
 
 	if (type & (VTFIXUP_TYPE_FROM_UNMANAGED | VTFIXUP_TYPE_FROM_UNMANAGED_RETAIN_APPDOMAIN)) {
@@ -10248,6 +10262,8 @@ ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringAnsi_len (char *ptr,
 MonoString *
 ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringUni (guint16 *ptr)
 {
+	MonoError error;
+	MonoString *res = NULL;
 	MonoDomain *domain = mono_domain_get (); 
 	int len = 0;
 	guint16 *t = ptr;
@@ -10258,20 +10274,30 @@ ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringUni (guint16 *ptr)
 	while (*t++)
 		len++;
 
-	return mono_string_new_utf16 (domain, ptr, len);
+	res = mono_string_new_utf16_checked (domain, ptr, len, &error);
+	mono_error_raise_exception (&error);
+	return res;
 }
 
 MonoString *
 ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringUni_len (guint16 *ptr, gint32 len)
 {
+	MonoError error;
+	MonoString *res = NULL;
 	MonoDomain *domain = mono_domain_get (); 
 
+	mono_error_init (&error);
+
 	if (ptr == NULL) {
-		mono_set_pending_exception (mono_get_exception_argument_null ("ptr"));
-		return NULL;
+		res = NULL;
+		mono_error_set_argument_null (&error, "ptr", "");
 	} else {
-		return mono_string_new_utf16 (domain, ptr, len);
+		res = mono_string_new_utf16_checked (domain, ptr, len, &error);
 	}
+
+	if (!mono_error_ok (&error))
+		mono_error_set_pending_exception (&error);
+	return res;
 }
 
 guint32 
@@ -10374,6 +10400,7 @@ ves_icall_System_Runtime_InteropServices_Marshal_PtrToStructure (gpointer src, M
 MonoObject *
 ves_icall_System_Runtime_InteropServices_Marshal_PtrToStructure_type (gpointer src, MonoReflectionType *type)
 {
+	MonoError error;
 	MonoClass *klass;
 	MonoDomain *domain = mono_domain_get (); 
 	MonoObject *res;
@@ -10388,7 +10415,8 @@ ves_icall_System_Runtime_InteropServices_Marshal_PtrToStructure_type (gpointer s
 		return NULL;
 	}
 
-	res = mono_object_new (domain, klass);
+	res = mono_object_new_checked (domain, klass, &error);
+	mono_error_raise_exception (&error);
 
 	ptr_to_structure (src, res);
 

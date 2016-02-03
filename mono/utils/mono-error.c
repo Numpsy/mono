@@ -119,12 +119,12 @@ mono_error_ok (MonoError *error)
 }
 
 void
-mono_error_assert_ok (MonoError *error)
+mono_error_assert_ok_pos (MonoError *error, const char* filename, int lineno)
 {
 	if (mono_error_ok (error))
 		return;
 
-	g_error ("%s\n", mono_error_get_message (error));
+	g_error ("%s:%d: %s\n", filename, lineno, mono_error_get_message (error));
 }
 
 unsigned short
@@ -347,6 +347,7 @@ mono_error_set_exception_instance (MonoError *oerror, MonoException *exc)
 {
 	MonoErrorInternal *error = (MonoErrorInternal*)oerror;
 
+	mono_error_prepare (error);
 	error->error_code = MONO_ERROR_EXCEPTION_INSTANCE;
 	error->exn.instance_handle = mono_gchandle_new (exc ? &exc->object : NULL, FALSE);
 }
@@ -475,6 +476,18 @@ mono_error_set_argument (MonoError *oerror, const char *argument, const char *ms
 	mono_error_prepare (error);
 
 	error->error_code = MONO_ERROR_ARGUMENT;
+	error->first_argument = argument;
+
+	set_error_message ();
+}
+
+void
+mono_error_set_argument_null (MonoError *oerror, const char *argument, const char *msg_format, ...)
+{
+	MonoErrorInternal *error = (MonoErrorInternal*)oerror;
+	mono_error_prepare (error);
+
+	error->error_code = MONO_ERROR_ARGUMENT_NULL;
 	error->first_argument = argument;
 
 	set_error_message ();
@@ -642,6 +655,10 @@ mono_error_prepare_exception (MonoError *oerror, MonoError *error_out)
 
 	case MONO_ERROR_ARGUMENT:
 		exception = mono_get_exception_argument (error->first_argument, error->full_message);
+		break;
+
+	case MONO_ERROR_ARGUMENT_NULL:
+		exception = mono_get_exception_argument_null (error->first_argument);
 		break;
 
 	case MONO_ERROR_NOT_VERIFIABLE: {

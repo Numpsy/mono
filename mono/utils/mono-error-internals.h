@@ -39,8 +39,13 @@ typedef struct {
 
 #define is_ok(error) ((error)->error_code == MONO_ERROR_NONE)
 
+#define return_if_nok(error) do { if (!is_ok ((error))) return; } while (0)
+#define return_val_if_nok(error,val) do { if (!is_ok ((error))) return (val); } while (0)
+
 void
-mono_error_assert_ok (MonoError *error);
+mono_error_assert_ok_pos (MonoError *error, const char* filename, int lineno);
+
+#define mono_error_assert_ok(e) mono_error_assert_ok_pos (e, __FILE__, __LINE__);
 
 void
 mono_error_dup_strings (MonoError *error, gboolean dup_strings);
@@ -78,6 +83,9 @@ mono_error_set_out_of_memory (MonoError *error, const char *msg_format, ...);
 
 void
 mono_error_set_argument (MonoError *error, const char *argument, const char *msg_format, ...);
+
+void
+mono_error_set_argument_null (MonoError *oerror, const char *argument, const char *msg_format, ...);
 
 void
 mono_error_set_not_verifiable (MonoError *oerror, MonoMethod *method, const char *msg_format, ...);

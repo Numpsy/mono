@@ -19,6 +19,7 @@
 #include "jit-icalls.h"
 #include <mono/utils/mono-error-internals.h>
 #include <mono/metadata/threads-types.h>
+#include <mono/metadata/reflection-internals.h>
 
 #ifdef ENABLE_LLVM
 #include "mini-llvm-cpp.h"
@@ -1127,7 +1128,10 @@ mono_helper_newobj_mscorlib (guint32 idx)
 		return NULL;
 	}
 
-	return mono_object_new (mono_domain_get (), klass);
+	MonoObject *obj = mono_object_new_checked (mono_domain_get (), klass, &error);
+	if (!mono_error_ok (&error))
+		mono_error_set_pending_exception (&error);
+	return obj;
 }
 
 /*
@@ -1266,10 +1270,12 @@ mono_get_native_calli_wrapper (MonoImage *image, MonoMethodSignature *sig, gpoin
 }
 
 static MonoMethod*
-constrained_gsharedvt_call_setup (gpointer mp, MonoMethod *cmethod, MonoClass *klass, gpointer *this_arg)
+constrained_gsharedvt_call_setup (gpointer mp, MonoMethod *cmethod, MonoClass *klass, gpointer *this_arg, MonoError *error)
 {
 	MonoMethod *m;
 	int vt_slot, iface_offset;
+
+	mono_error_init (error);
 
 	if (klass->flags & TYPE_ATTRIBUTE_INTERFACE) {
 		MonoObject *this_obj;
@@ -1326,11 +1332,17 @@ constrained_gsharedvt_call_setup (gpointer mp, MonoMethod *cmethod, MonoClass *k
 MonoObject*
 mono_gsharedvt_constrained_call (gpointer mp, MonoMethod *cmethod, MonoClass *klass, gboolean deref_arg, gpointer *args)
 {
+	MonoError error;
 	MonoMethod *m;
 	gpointer this_arg;
 	gpointer new_args [16];
 
-	m = constrained_gsharedvt_call_setup (mp, cmethod, klass, &this_arg);
+	m = constrained_gsharedvt_call_setup (mp, cmethod, klass, &this_arg, &error);
+	if (!mono_error_ok (&error)) {
+		mono_error_set_pending_exception (&error);
+		return NULL;
+	}
+
 	if (!m)
 		return NULL;
 	if (args && deref_arg) {
@@ -1364,13 +1376,29 @@ mono_generic_class_init (MonoVTable *vtable)
 gpointer
 mono_fill_class_rgctx (MonoVTable *vtable, int index)
 {
-	return mono_class_fill_runtime_generic_context (vtable, index);
+	MonoError error;
+	gpointer res;
+
+	res = mono_class_fill_runtime_generic_context (vtable, index, &error);
+	if (!mono_error_ok (&error)) {
+		mono_error_set_pending_exception (&error);
+		return NULL;
+	}
+	return res;
 }
 
 gpointer
 mono_fill_method_rgctx (MonoMethodRuntimeGenericContext *mrgctx, int index)
 {
-	return mono_method_fill_runtime_generic_context (mrgctx, index);
+	MonoError error;
+	gpointer res;
+
+	res = mono_method_fill_runtime_generic_context (mrgctx, index, &error);
+	if (!mono_error_ok (&error)) {
+		mono_error_set_pending_exception (&error);
+		return NULL;
+	}
+	return res;
 }
 
 /*
@@ -1706,7 +1734,11 @@ mono_get_assembly_object (MonoImage *image)
 MonoObject*
 mono_get_method_object (MonoMethod *method)
 {
-	return (MonoObject*)mono_method_get_object (mono_domain_get (), method, method->klass);
+	MonoError error;
+	MonoObject * result;
+	result = (MonoObject*)mono_method_get_object_checked (mono_domain_get (), method, method->klass, &error);
+	mono_error_set_pending_exception (&error);
+	return result;
 }
 
 double
@@ -1727,16 +1759,75 @@ mono_llvmonly_set_calling_assembly (MonoImage *image)
 	jit_tls->calling_image = image;
 }
 
+
+static gboolean
+get_executing (MonoMethod *m, gint32 no, gint32 ilo, gboolean managed, gpointer data)
+{
+	MonoMethod **dest = (MonoMethod **)data;
+
+	/* skip unmanaged frames */
+	if (!managed)
+		return FALSE;
+
+	if (!(*dest)) {
+		if (!strcmp (m->klass->name_space, "System.Reflection"))
+			return FALSE;
+		*dest = m;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static gboolean
+get_caller_no_reflection (MonoMethod *m, gint32 no, gint32 ilo, gboolean managed, gpointer data)
+{
+	MonoMethod **dest = (MonoMethod **)data;
+
+	/* skip unmanaged frames */
+	if (!managed)
+		return FALSE;
+
+	if (m->wrapper_type != MONO_WRAPPER_NONE)
+		return FALSE;
+
+	if (m->klass->image == mono_defaults.corlib && !strcmp (m->klass->name_space, "System.Reflection"))
+		return FALSE;
+
+	if (m == *dest) {
+		*dest = NULL;
+		return FALSE;
+	}
+	if (!(*dest)) {
+		*dest = m;
+		return TRUE;
+	}
+	return FALSE;
+}
+
 MonoObject*
 mono_llvmonly_get_calling_assembly (void)
 {
 	MonoJitTlsData *jit_tls = NULL;
+	MonoMethod *m;
+	MonoMethod *dest;
+	MonoAssembly *assembly;
 
-	jit_tls = (MonoJitTlsData *)mono_native_tls_get_value (mono_jit_tls_id);
-	g_assert (jit_tls);
-	if (!jit_tls->calling_image) {
-		mono_set_pending_exception (mono_get_exception_not_supported ("Stack walks are not supported on this platform."));
-		return NULL;
+	dest = NULL;
+	mono_stack_walk_no_il (get_executing, &dest);
+	m = dest;
+	mono_stack_walk_no_il (get_caller_no_reflection, &dest);
+
+	if (!dest) {
+		/* Fall back to TLS */
+		jit_tls = (MonoJitTlsData *)mono_native_tls_get_value (mono_jit_tls_id);
+		g_assert (jit_tls);
+		if (!jit_tls->calling_image) {
+			mono_set_pending_exception (mono_get_exception_not_supported ("Stack walks are not supported on this platform."));
+			return NULL;
+		}
+		assembly = jit_tls->calling_image->assembly;
+	} else {
+		assembly = dest->klass->image->assembly;
 	}
 	return (MonoObject*)mono_assembly_get_object (mono_domain_get (), jit_tls->calling_image->assembly);
 }

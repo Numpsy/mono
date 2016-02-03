@@ -42,6 +42,7 @@
 #include <mono/utils/mono-memory-model.h>
 
 #include <mono/metadata/gc-internals.h>
+#include <mono/metadata/reflection-internals.h>
 
 #ifdef HAVE_SIGNAL_H
 #include <signal.h>
@@ -1322,16 +1323,21 @@ mono_thread_get_managed_id (MonoThread *thread)
 MonoString* 
 ves_icall_System_Threading_Thread_GetName_internal (MonoInternalThread *this_obj)
 {
+	MonoError error;
 	MonoString* str;
+
+	mono_error_init (&error);
 
 	LOCK_THREAD (this_obj);
 	
 	if (!this_obj->name)
 		str = NULL;
 	else
-		str = mono_string_new_utf16 (mono_domain_get (), this_obj->name, this_obj->name_len);
+		str = mono_string_new_utf16_checked (mono_domain_get (), this_obj->name, this_obj->name_len, &error);
 	
 	UNLOCK_THREAD (this_obj);
+
+	mono_error_raise_exception (&error);
 	
 	return str;
 }
@@ -2306,9 +2312,6 @@ mono_thread_suspend (MonoInternalThread *thread)
 	}
 	
 	thread->state |= ThreadState_SuspendRequested;
-
-	UNLOCK_THREAD (thread);
-
 	suspend_thread_internal (thread, FALSE);
 	return TRUE;
 }
@@ -3290,9 +3293,6 @@ void mono_thread_suspend_all_other_threads (void)
 				thread->state &= ~ThreadState_AbortRequested;
 			
 			thread->state |= ThreadState_SuspendRequested;
-
-			UNLOCK_THREAD (thread);
-
 			/* Signal the thread to suspend */
 			suspend_thread_internal (thread, TRUE);
 		}
@@ -3492,12 +3492,16 @@ mono_threads_perform_thread_dump (void)
 static void
 mono_threads_get_thread_dump (MonoArray **out_threads, MonoArray **out_stack_frames)
 {
+	MonoError error;
+
 	ThreadDumpUserData ud;
 	MonoInternalThread *thread_array [128];
 	MonoDomain *domain = mono_domain_get ();
 	MonoDebugSourceLocation *location;
 	int tindex, nthreads;
 
+	mono_error_init (&error);
+	
 	*out_threads = NULL;
 	*out_stack_frames = NULL;
 
@@ -3534,7 +3538,9 @@ mono_threads_get_thread_dump (MonoArray **out_threads, MonoArray **out_stack_fra
 		for (i = 0; i < ud.nframes; ++i) {
 			MonoStackFrameInfo *frame = &ud.frames [i];
 			MonoMethod *method = NULL;
-			MonoStackFrame *sf = (MonoStackFrame *)mono_object_new (domain, mono_defaults.stack_frame_class);
+			MonoStackFrame *sf = (MonoStackFrame *)mono_object_new_checked (domain, mono_defaults.stack_frame_class, &error);
+			if (!mono_error_ok (&error))
+				goto leave;
 
 			sf->native_offset = frame->native_offset;
 
@@ -3544,7 +3550,9 @@ mono_threads_get_thread_dump (MonoArray **out_threads, MonoArray **out_stack_fra
 			if (method) {
 				sf->method_address = (gsize) frame->ji->code_start;
 
-				MONO_OBJECT_SETREF (sf, method, mono_method_get_object (domain, method, NULL));
+				MonoReflectionMethod *rm = mono_method_get_object_checked (domain, method, NULL, &error);
+				mono_error_raise_exception (&error); /* FIXME don't raise here */
+				MONO_OBJECT_SETREF (sf, method, rm);
 
 				location = mono_debug_lookup_source_location (method, frame->native_offset, domain);
 				if (location) {
@@ -3564,7 +3572,9 @@ mono_threads_get_thread_dump (MonoArray **out_threads, MonoArray **out_stack_fra
 		}
 	}
 
+leave:
 	g_free (ud.frames);
+	mono_error_raise_exception (&error); /* FIXME don't raise here */
 }
 
 /**
@@ -4791,7 +4801,6 @@ suspend_thread_critical (MonoThreadInfo *info, gpointer ud)
 static void
 suspend_thread_internal (MonoInternalThread *thread, gboolean interrupt)
 {
-	LOCK_THREAD (thread);
 	if (thread == mono_thread_internal_current ()) {
 		mono_thread_info_begin_self_suspend ();
 		//XXX replace this with better named functions

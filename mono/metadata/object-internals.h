@@ -618,6 +618,8 @@ typedef struct {
 	gboolean (*debug_log_is_enabled) (void);
 	gboolean (*tls_key_supported) (MonoTlsKey key);
 	void     (*init_delegate) (MonoDelegate *del);
+	MonoObject* (*runtime_invoke) (MonoMethod *method, void *obj, void **params, MonoError *error, MonoObject **exc);
+	void*    (*compile_method) (MonoMethod *method, MonoError *error);
 } MonoRuntimeCallbacks;
 
 typedef gboolean (*MonoInternalStackWalk) (MonoStackFrameInfo *frame, MonoContext *ctx, gpointer data);
@@ -632,12 +634,8 @@ typedef struct {
 	gboolean (*mono_install_handler_block_guard) (MonoThreadUnwindState *unwind_state);
 } MonoRuntimeExceptionHandlingCallbacks;
 
-
 /* used to free a dynamic method */
-typedef void        (*MonoFreeMethodFunc)	 (MonoDomain *domain, MonoMethod *method);
-
-/* Used to initialize the method pointers inside vtables */
-typedef gboolean    (*MonoInitVTableFunc)    (MonoVTable *vtable);
+typedef void        (*MonoFreeMethodFunc)       (MonoDomain *domain, MonoMethod *method);
 
 MONO_COLD void mono_set_pending_exception (MonoException *exc);
 
@@ -682,12 +680,6 @@ mono_class_get_allocation_ftn (MonoVTable *vtable, gboolean for_box, gboolean *p
 
 void
 mono_runtime_free_method    (MonoDomain *domain, MonoMethod *method);
-
-void	    
-mono_install_runtime_invoke (MonoInvokeFunc func);
-
-void	    
-mono_install_compile_method (MonoCompileFunc func);
 
 void
 mono_install_free_method    (MonoFreeMethodFunc func);
@@ -1632,6 +1624,9 @@ MonoObject *
 mono_object_new_specific_checked (MonoVTable *vtable, MonoError *error);
 
 MonoObject *
+ves_icall_object_new (MonoDomain *domain, MonoClass *klass);
+	
+MonoObject *
 ves_icall_object_new_specific (MonoVTable *vtable);
 
 MonoObject *
@@ -1677,6 +1672,9 @@ mono_error_set_pending_exception (MonoError *error);
 MonoArray *
 mono_glist_to_array (GList *list, MonoClass *eclass);
 
+MonoObject *
+mono_object_new_checked (MonoDomain *domain, MonoClass *klass, MonoError *error);
+
 MonoObject*
 mono_object_new_mature (MonoVTable *vtable, MonoError *error);
 
@@ -1691,6 +1689,12 @@ mono_object_clone_checked (MonoObject *obj, MonoError *error);
 
 MonoString *
 mono_string_new_size_checked (MonoDomain *domain, gint32 len, MonoError *error);
+
+MonoString*
+mono_string_new_checked (MonoDomain *domain, const char *text, MonoError *merror);
+
+MonoString *
+mono_string_new_utf16_checked (MonoDomain *domain, const guint16 *text, gint32 len, MonoError *error);
 
 #endif /* __MONO_OBJECT_INTERNALS_H__ */
 

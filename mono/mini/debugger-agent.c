@@ -6559,8 +6559,11 @@ do_invoke_method (DebuggerTlsData *tls, Buffer *buf, InvokeData *invoke, guint8 
 		if (!strcmp (m->name, ".ctor")) {
 			if (m->klass->flags & TYPE_ATTRIBUTE_ABSTRACT)
 				return ERR_INVALID_ARGUMENT;
-			else
-				this_arg = mono_object_new (domain, m->klass);
+			else {
+				MonoError error;
+				this_arg = mono_object_new_checked (domain, m->klass, &error);
+				mono_error_assert_ok (&error);
+			}
 		} else {
 			return ERR_INVALID_ARGUMENT;
 		}
@@ -7572,6 +7575,7 @@ domain_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		break;
 	}
 	case CMD_APPDOMAIN_CREATE_BOXED_VALUE: {
+		MonoError error;
 		MonoClass *klass;
 		MonoDomain *domain2;
 		MonoObject *o;
@@ -7586,7 +7590,8 @@ domain_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		// FIXME:
 		g_assert (domain == domain2);
 
-		o = mono_object_new (domain, klass);
+		o = mono_object_new_checked (domain, klass, &error);
+		mono_error_assert_ok (&error);
 
 		err = decode_value (&klass->byval_arg, domain, (guint8 *)mono_object_unbox (o), p, &p, end);
 		if (err != ERR_NONE)
@@ -7629,7 +7634,10 @@ assembly_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 			if (token == 0) {
 				buffer_add_id (buf, 0);
 			} else {
-				m = mono_get_method (ass->image, token, NULL);
+				MonoError error;
+				m = mono_get_method_checked (ass->image, token, NULL, NULL, &error);
+				if (!m)
+					mono_error_cleanup (&error); /* FIXME don't swallow the error */
 				buffer_add_methodid (buf, domain, m);
 			}
 		}
@@ -8288,9 +8296,11 @@ type_commands_internal (int command, MonoClass *klass, MonoDomain *domain, guint
 		break;
 	}
 	case CMD_TYPE_CREATE_INSTANCE: {
+		MonoError error;
 		MonoObject *obj;
 
-		obj = mono_object_new (domain, klass);
+		obj = mono_object_new_checked (domain, klass, &error);
+		mono_error_assert_ok (&error);
 		buffer_add_objid (buf, obj);
 		break;
 	}
