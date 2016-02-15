@@ -1974,6 +1974,7 @@ major_finish_collection (const char *reason, size_t old_next_pin_slot, gboolean 
 	time_major_fragment_creation += TV_ELAPSED (atv, btv);
 
 	binary_protocol_sweep_begin (GENERATION_OLD, !major_collector.sweeps_lazily);
+	sgen_memgov_major_pre_sweep ();
 
 	TV_GETTIME (atv);
 	time_major_free_bigobjs += TV_ELAPSED (btv, atv);
@@ -2154,12 +2155,12 @@ major_finish_concurrent_collection (gboolean forced)
  * LOCKING: The GC lock MUST be held.
  */
 void
-sgen_ensure_free_space (size_t size)
+sgen_ensure_free_space (size_t size, int generation)
 {
 	int generation_to_collect = -1;
 	const char *reason = NULL;
 
-	if (size > SGEN_MAX_SMALL_OBJ_SIZE) {
+	if (generation == GENERATION_OLD) {
 		if (sgen_need_major_collection (size)) {
 			reason = "LOS overflow";
 			generation_to_collect = GENERATION_OLD;

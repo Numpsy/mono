@@ -1259,11 +1259,18 @@ sig_to_llvm_sig_full (EmitContext *ctx, MonoMethodSignature *sig, LLVMCallInfo *
 	case LLVMArgVtypeByVal:
 		/* Vtype returned normally by val */
 		break;
-	case LLVMArgVtypeAsScalar:
+	case LLVMArgVtypeAsScalar: {
+		int size = mono_class_value_size (mono_class_from_mono_type (rtype), NULL);
 		/* LLVM models this by returning an int */
-		g_assert (cinfo->ret.nslots == 1 || cinfo->ret.nslots == 2);
-		ret_type = LLVMIntType (cinfo->ret.nslots * sizeof (mgreg_t) * 8);
+		if (size < SIZEOF_VOID_P) {
+			g_assert (cinfo->ret.nslots == 1);
+			ret_type = LLVMIntType (size * 8);
+		} else {
+			g_assert (cinfo->ret.nslots == 1 || cinfo->ret.nslots == 2);
+			ret_type = LLVMIntType (cinfo->ret.nslots * sizeof (mgreg_t) * 8);
+		}
 		break;
+	}
 	case LLVMArgFpStruct: {
 		/* Vtype returned as a fp struct */
 		LLVMTypeRef members [16];
@@ -1603,7 +1610,8 @@ get_aotconst_typed (EmitContext *ctx, MonoJumpInfoType type, gconstpointer data,
 
 	name = get_aotconst_name (type, data, got_offset);
 	if (llvm_type) {
-		load = convert (ctx, LLVMBuildLoad (builder, got_entry_addr, ""), llvm_type);
+		load = LLVMBuildLoad (builder, got_entry_addr, "");
+		load = convert (ctx, load, llvm_type);
 		LLVMSetValueName (load, name ? name : "");
 	} else {
 		load = LLVMBuildLoad (builder, got_entry_addr, name ? name : "");
@@ -1638,6 +1646,10 @@ get_callee (EmitContext *ctx, LLVMTypeRef llvm_sig, MonoJumpInfoType type, gcons
 
 				g_hash_table_insert (ctx->module->direct_callables, (char*)callee_name, callee);
 			} else {
+				/* LLVMTypeRef's are uniqued */
+				if (LLVMGetElementType (LLVMTypeOf (callee)) != llvm_sig)
+					return LLVMConstBitCast (callee, LLVMPointerType (llvm_sig, 0));
+
 				g_free (callee_name);
 			}
 			return callee;
@@ -2030,7 +2042,7 @@ emit_cond_system_exception (EmitContext *ctx, MonoBasicBlock *bb, const char *ex
 
 		if (!sig)
 			sig = LLVMFunctionType1 (LLVMVoidType (), LLVMInt32Type (), FALSE);
-		callee = get_callee (ctx, sig, MONO_PATCH_INFO_INTERNAL_METHOD, "mono_llvm_throw_corlib_exception");
+		callee = get_callee (ctx, sig, MONO_PATCH_INFO_JIT_ICALL_ADDR, "mono_llvm_throw_corlib_exception");
 
 		LLVMBuildBr (builder, ex2_bb);
 
@@ -2108,7 +2120,7 @@ emit_args_to_vtype (EmitContext *ctx, LLVMBuilderRef builder, MonoType *t, LLVMV
 {
 	int j, size, nslots;
 
-	size = get_vtype_size (t);
+	size = mono_class_value_size (mono_class_from_mono_type (t), NULL);
 
 	if (MONO_CLASS_IS_SIMD (ctx->cfg, mono_class_from_mono_type (t))) {
 		address = LLVMBuildBitCast (ctx->builder, address, LLVMPointerType (LLVMInt8Type (), 0), "");
@@ -2123,6 +2135,9 @@ emit_args_to_vtype (EmitContext *ctx, LLVMBuilderRef builder, MonoType *t, LLVMV
 		LLVMValueRef index [2], addr, daddr;
 		int part_size = size > sizeof (gpointer) ? sizeof (gpointer) : size;
 		LLVMTypeRef part_type;
+
+		while (part_size != 1 && part_size != 2 && part_size != 4 && part_size < 8)
+			part_size ++;
 
 		if (ainfo->pair_storage [j] == LLVMArgNone)
 			continue;
@@ -2898,11 +2913,20 @@ emit_entry_bb (EmitContext *ctx, LLVMBuilderRef builder)
 		}
 		case LLVMArgAsIArgs: {
 			LLVMValueRef arg = LLVMGetParam (ctx->lmethod, pindex);
-
-			ctx->addresses [reg] = build_alloca (ctx, ainfo->type);
+			int size;
 
 			/* The argument is received as an array of ints, store it into the real argument */
-			LLVMBuildStore (ctx->builder, arg, convert (ctx, ctx->addresses [reg], LLVMPointerType (LLVMTypeOf (arg), 0)));
+			ctx->addresses [reg] = build_alloca (ctx, ainfo->type);
+
+			size = mono_class_value_size (mono_class_from_mono_type (ainfo->type), NULL);
+			if (size < SIZEOF_VOID_P) {
+				/* The upper bits of the registers might not be valid */
+				LLVMValueRef val = LLVMBuildExtractValue (builder, arg, 0, "");
+				LLVMValueRef dest = convert (ctx, ctx->addresses [reg], LLVMPointerType (LLVMIntType (size * 8), 0));
+				LLVMBuildStore (ctx->builder, LLVMBuildTrunc (builder, val, LLVMIntType (size * 8), ""), dest);
+			} else {
+				LLVMBuildStore (ctx->builder, arg, convert (ctx, ctx->addresses [reg], LLVMPointerType (LLVMTypeOf (arg), 0)));
+			}
 			break;
 		}
 		case LLVMArgVtypeAsScalar:
@@ -3449,7 +3473,7 @@ emit_llvmonly_throw (EmitContext *ctx, MonoBasicBlock *bb, gboolean rethrow, LLV
 		LLVMTypeRef fun_sig = LLVMFunctionType1 (LLVMVoidType (), exc_type, FALSE);
 
 		if (ctx->cfg->compile_aot) {
-			callee = get_callee (ctx, fun_sig, MONO_PATCH_INFO_INTERNAL_METHOD, icall_name);
+			callee = get_callee (ctx, fun_sig, MONO_PATCH_INFO_JIT_ICALL_ADDR, icall_name);
 		} else {
 			callee = LLVMAddFunction (ctx->lmodule, icall_name, fun_sig);
 			LLVMAddGlobalMapping (ctx->module->ee, callee, resolve_patch (ctx->cfg, MONO_PATCH_INFO_INTERNAL_METHOD, icall_name));
@@ -4166,9 +4190,6 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			case LLVMArgVtypeAsScalar: {
 				LLVMTypeRef ret_type = LLVMGetReturnType (LLVMGetElementType (LLVMTypeOf (method)));
 				LLVMValueRef retval;
-				int size;
-
-				size = get_vtype_size (sig->ret);
 
 				g_assert (addresses [ins->sreg1]);
 
@@ -5112,7 +5133,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			name = get_aotconst_name (ji->type, ji->data.target, got_offset);
 			values [ins->dreg] = LLVMBuildLoad (builder, got_entry_addr, name);
 			g_free (name);
-			set_invariant_load_flag (values [ins->dreg]);
+			/* Can't use this in llvmonly mode since the got slots are initialized by the methods themselves */
+			if (!cfg->llvm_only)
+				set_invariant_load_flag (values [ins->dreg]);
 			break;
 		}
 		case OP_NOT_REACHED:
@@ -7975,6 +7998,8 @@ mono_llvm_emit_aot_module (const char *filename, const char *cu_name)
 	emit_llvm_used (&aot_module);
 	emit_dbg_info (&aot_module, filename, cu_name);
 	emit_aot_file_info (&aot_module);
+
+	mono_llvm_create_di_compile_unit (aot_module.lmodule);
 
 	/*
 	 * Replace GOT entries for directly callable methods with the methods themselves.

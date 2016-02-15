@@ -77,7 +77,6 @@ Mono.Xml/SmallXmlParser.cs
 Mono.Xml/SecurityParser.cs
 System/ActivationContext.cs
 System/AndroidPlatform.cs
-System/AppContext.cs
 System/AppDomain.cs
 System/AppDomainInitializer.cs
 System/AppDomainManager.cs
@@ -638,6 +637,7 @@ System.Security/NamedPermissionSet.cs
 System.Security/PermissionBuilder.cs
 System.Security/PermissionSet.cs
 System.Security/PolicyLevelType.cs
+System.Security/SafeAccessTokenHandle.cs
 System.Security/SecureString.cs
 System.Security/SecurityElement.cs
 System.Security/SecurityFrame.cs
@@ -1066,6 +1066,8 @@ ReferenceSources/SecurityContext.cs
 ../../../external/referencesource/mscorlib/system/unsafecharbuffer.cs
 ../../../external/referencesource/mscorlib/system/version.cs
 
+../../../external/referencesource/mscorlib/system/AppContext/AppContext.cs
+
 ../../../external/referencesource/mscorlib/system/collections/arraylist.cs
 ../../../external/referencesource/mscorlib/system/collections/bitarray.cs
 ../../../external/referencesource/mscorlib/system/collections/caseinsensitivecomparer.cs
@@ -1136,6 +1138,7 @@ ReferenceSources/SecurityContext.cs
 
 ../../../external/referencesource/mscorlib/system/diagnostics/contracts/contracts.cs
 ../../../external/referencesource/mscorlib/system/diagnostics/contracts/contractsbcl.cs
+../../../external/referencesource/mscorlib/system/diagnostics/eventing/winmeta.cs
 
 ../../../external/referencesource/mscorlib/system/globalization/bidicategory.cs
 ../../../external/referencesource/mscorlib/system/globalization/calendar.cs

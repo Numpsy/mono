@@ -48,6 +48,7 @@
 #include <mono/metadata/attach.h>
 #include <mono/metadata/runtime.h>
 #include <mono/metadata/reflection-internals.h>
+#include <mono/metadata/monitor.h>
 #include <mono/utils/mono-math.h>
 #include <mono/utils/mono-compiler.h>
 #include <mono/utils/mono-counters.h>
@@ -712,6 +713,19 @@ register_icall_no_wrapper (gpointer func, const char *name, const char *sigstr)
 }
 
 static void
+register_icall_with_wrapper (gpointer func, const char *name, const char *sigstr)
+{
+	MonoMethodSignature *sig;
+
+	if (sigstr)
+		sig = mono_create_icall_signature (sigstr);
+	else
+		sig = NULL;
+
+	mono_register_jit_icall_full (func, name, sig, FALSE, FALSE, NULL);
+}
+
+static void
 register_dyn_icall (gpointer func, const char *name, const char *sigstr, gboolean save)
 {
 	MonoMethodSignature *sig;
@@ -1341,10 +1355,12 @@ mono_patch_info_equal (gconstpointer ka, gconstpointer kb)
 }
 
 gpointer
-mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *patch_info, gboolean run_cctors)
+mono_resolve_patch_target_checked (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *patch_info, gboolean run_cctors, MonoError *error)
 {
 	unsigned char *ip = patch_info->ip.i + code;
 	gconstpointer target = NULL;
+
+	mono_error_init (error);
 
 	switch (patch_info->type) {
 	case MONO_PATCH_INFO_BB:
@@ -1558,29 +1574,27 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 	case MONO_PATCH_INFO_TYPE_FROM_HANDLE: {
 		gpointer handle;
 		MonoClass *handle_class;
-		MonoError error;
 
 		handle = mono_ldtoken_checked (patch_info->data.token->image,
-							   patch_info->data.token->token, &handle_class, patch_info->data.token->has_context ? &patch_info->data.token->context : NULL, &error);
-		if (!mono_error_ok (&error))
-			g_error ("Could not patch ldtoken due to %s", mono_error_get_message (&error));
+							   patch_info->data.token->token, &handle_class, patch_info->data.token->has_context ? &patch_info->data.token->context : NULL, error);
+		if (!mono_error_ok (error))
+			g_error ("Could not patch ldtoken due to %s", mono_error_get_message (error));
 		mono_class_init (handle_class);
 		mono_class_init (mono_class_from_mono_type ((MonoType *)handle));
 
-		target = mono_type_get_object_checked (domain, (MonoType *)handle, &error);
-		mono_error_raise_exception (&error);
-
+		target = mono_type_get_object_checked (domain, (MonoType *)handle, error);
+		if (!mono_error_ok (error))
+			return NULL;
 		break;
 	}
 	case MONO_PATCH_INFO_LDTOKEN: {
 		gpointer handle;
 		MonoClass *handle_class;
-		MonoError error;
 
 		handle = mono_ldtoken_checked (patch_info->data.token->image,
-							   patch_info->data.token->token, &handle_class, patch_info->data.token->has_context ? &patch_info->data.token->context : NULL, &error);
- 		if (!mono_error_ok (&error))
-			g_error ("Could not patch ldtoken due to %s", mono_error_get_message (&error));
+							   patch_info->data.token->token, &handle_class, patch_info->data.token->has_context ? &patch_info->data.token->context : NULL, error);
+ 		if (!mono_error_ok (error))
+			g_error ("Could not patch ldtoken due to %s", mono_error_get_message (error));
 		mono_class_init (handle_class);
 
 		target = handle;
@@ -1598,8 +1612,10 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 			if (run_cctors) {
 				target = mono_lookup_pinvoke_call (patch_info->data.method, &exc_class, &exc_arg);
 				if (!target) {
-					if (mono_aot_only)
-						mono_raise_exception (mono_exception_from_name_msg (mono_defaults.corlib, "System", exc_class, exc_arg));
+					if (mono_aot_only) {
+						mono_error_set_exception_instance (error, mono_exception_from_name_msg (mono_defaults.corlib, "System", exc_class, exc_arg));
+						return NULL;
+					}
 					g_error ("Unable to resolve pinvoke method '%s' Re-run with MONO_LOG_LEVEL=debug for more information.\n", mono_method_full_name (patch_info->data.method, TRUE));
 				}
 			} else {
@@ -1712,6 +1728,17 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 	}
 
 	return (gpointer)target;
+}
+
+gpointer
+mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *patch_info, gboolean run_cctors)
+{
+	MonoError error;
+	gpointer res;
+
+	res = mono_resolve_patch_target_checked (method, domain, code, patch_info, run_cctors, &error);
+	mono_error_raise_exception (&error); /* FIXME don't raise here */
+	return res;
 }
 
 void
@@ -2328,7 +2355,7 @@ create_runtime_invoke_info (MonoDomain *domain, MonoMethod *method, gpointer com
 }
 
 static MonoObject*
-mono_llvmonly_runtime_invoke (MonoMethod *method, RuntimeInvokeInfo *info, void *obj, void **params, MonoObject **exc)
+mono_llvmonly_runtime_invoke (MonoMethod *method, RuntimeInvokeInfo *info, void *obj, void **params, MonoObject **exc, MonoError *error)
 {
 	MonoMethodSignature *sig = info->sig;
 	MonoDomain *domain = mono_domain_get ();
@@ -2338,6 +2365,8 @@ mono_llvmonly_runtime_invoke (MonoMethod *method, RuntimeInvokeInfo *info, void 
 	guint8 retval [256];
 	gpointer *param_refs;
 	int i, pindex;
+
+	mono_error_init (error);
 
 	g_assert (info->gsharedvt_invoke);
 
@@ -2391,6 +2420,8 @@ mono_llvmonly_runtime_invoke (MonoMethod *method, RuntimeInvokeInfo *info, void 
 	runtime_invoke = (MonoObject *(*)(MonoObject *, void **, MonoObject **, void *))info->runtime_invoke;
 
 	runtime_invoke (NULL, args, exc, info->compiled_method);
+	if (exc && *exc)
+		mono_error_set_exception_instance (error, (MonoException*) *exc);
 
 	if (sig->ret->type != MONO_TYPE_VOID && info->ret_box_class)
 		return mono_value_box (domain, info->ret_box_class, retval);
@@ -2403,11 +2434,13 @@ mono_llvmonly_runtime_invoke (MonoMethod *method, RuntimeInvokeInfo *info, void 
  * @method: the method to invoke
  * @obj: this pointer
  * @params: array of parameter values.
- * @error: error
- * @exc: used to catch exceptions objects
+ * @exc: Set to the exception raised in the managed method.  If NULL, error is thrown instead.
+ *       If coop is enabled, this argument is ignored - all exceptoins are caught and propagated
+ *       through @error
+ * @error: error or caught exception object
  */
 static MonoObject*
-mono_jit_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoError *error, MonoObject **exc)
+mono_jit_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoObject **exc, MonoError *error)
 {
 	MonoMethod *invoke, *callee;
 	MonoObject *(*runtime_invoke) (MonoObject *this_obj, void **params, MonoObject **exc, void* compiled_method);
@@ -2436,10 +2469,10 @@ mono_jit_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoError
 			 */
 			mono_class_setup_vtable (method->klass);
 			if (method->klass->exception_type != MONO_EXCEPTION_NONE) {
+				MonoException *fail_exc = mono_class_get_exception_for_failure (method->klass);
 				if (exc)
-					*exc = (MonoObject*)mono_class_get_exception_for_failure (method->klass);
-				else
-					mono_raise_exception (mono_class_get_exception_for_failure (method->klass));
+					*exc = (MonoObject*)fail_exc;
+				mono_error_set_exception_instance (error, fail_exc);
 				return NULL;
 			}
 		}
@@ -2504,13 +2537,24 @@ mono_jit_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoError
 	 * We need this here because mono_marshal_get_runtime_invoke can place
 	 * the helper method in System.Object and not the target class.
 	 */
-	if (exc) {
+	if (exc)
+	{
 		*exc = (MonoObject*)mono_runtime_class_init_full (info->vtable, FALSE);
-		if (*exc)
+		if (*exc) {
+			mono_error_set_exception_instance (error, (MonoException*) *exc);
 			return NULL;
+		}
 	} else {
 		mono_runtime_class_init (info->vtable);
 	}
+
+	/* If coop is enabled, and the caller didn't ask for the exception to be caught separately,
+	   we always catch the exception and propagate it through the MonoError */
+	gboolean catchExcInMonoError =
+		(exc == NULL) && mono_threads_is_coop_enabled ();
+	MonoObject *invoke_exc = NULL;
+	if (catchExcInMonoError)
+		exc = &invoke_exc;
 
 	/* The wrappers expect this to be initialized to NULL */
 	if (exc)
@@ -2554,6 +2598,8 @@ mono_jit_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoError
 		mono_arch_start_dyn_call (info->dyn_call_info, (gpointer**)args, retval, buf, sizeof (buf));
 
 		dyn_runtime_invoke (buf, exc, info->compiled_method);
+		if (catchExcInMonoError && *exc != NULL)
+			mono_error_set_exception_instance (error, (MonoException*) *exc);
 
 		mono_arch_finish_dyn_call (info->dyn_call_info, buf);
 
@@ -2565,11 +2611,14 @@ mono_jit_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoError
 #endif
 
 	if (mono_llvm_only)
-		return mono_llvmonly_runtime_invoke (method, info, obj, params, exc);
+		return mono_llvmonly_runtime_invoke (method, info, obj, params, exc, error);
 
 	runtime_invoke = (MonoObject *(*)(MonoObject *, void **, MonoObject **, void *))info->runtime_invoke;
 
-	return runtime_invoke ((MonoObject *)obj, params, exc, info->compiled_method);
+	MonoObject *result = runtime_invoke ((MonoObject *)obj, params, exc, info->compiled_method);
+	if (catchExcInMonoError && *exc != NULL)
+		mono_error_set_exception_instance (error, (MonoException*) *exc);
+	return result;
 }
 
 typedef struct {
@@ -3710,7 +3759,7 @@ register_icalls (void)
 	register_icall (mono_llvm_match_exception, "mono_llvm_match_exception", "int ptr int int", TRUE);
 	register_icall (mono_llvm_clear_exception, "mono_llvm_clear_exception", NULL, TRUE);
 	register_icall (mono_llvm_load_exception, "mono_llvm_load_exception", "object", TRUE);
-	register_icall (mono_llvm_throw_corlib_exception, "mono_llvm_throw_corlib_exception", "void int", FALSE);
+	register_icall (mono_llvm_throw_corlib_exception, "mono_llvm_throw_corlib_exception", "void int", TRUE);
 #if defined(ENABLE_LLVM) && !defined(MONO_LLVM_LOADED)
 	register_icall (mono_llvm_set_unhandled_exception_handler, "mono_llvm_set_unhandled_exception_handler", NULL, TRUE);
 
@@ -3919,14 +3968,17 @@ register_icalls (void)
 	register_icall_no_wrapper (mono_resolve_vcall_gsharedvt, "mono_resolve_vcall_gsharedvt", "ptr object int ptr ptr");
 	register_icall_no_wrapper (mono_resolve_generic_virtual_call, "mono_resolve_generic_virtual_call", "ptr ptr int ptr");
 	register_icall_no_wrapper (mono_resolve_generic_virtual_iface_call, "mono_resolve_generic_virtual_iface_call", "ptr ptr int ptr");
-	register_icall_no_wrapper (mono_llvmonly_set_calling_assembly, "mono_llvmonly_set_calling_assembly", "void ptr");
-	register_icall_no_wrapper (mono_llvmonly_get_calling_assembly, "mono_llvmonly_get_calling_assembly", "object");
 	/* This needs a wrapper so it can have a preserveall cconv */
 	register_icall (mono_init_vtable_slot, "mono_init_vtable_slot", "ptr ptr int", FALSE);
 	register_icall (mono_llvmonly_init_delegate, "mono_llvmonly_init_delegate", "void object", TRUE);
 	register_icall (mono_llvmonly_init_delegate_virtual, "mono_llvmonly_init_delegate_virtual", "void object object ptr", TRUE);
 	register_icall (mono_get_assembly_object, "mono_get_assembly_object", "object ptr", TRUE);
 	register_icall (mono_get_method_object, "mono_get_method_object", "object ptr", TRUE);
+
+	register_icall_with_wrapper (mono_monitor_enter, "mono_monitor_enter", "void obj");
+	register_icall_with_wrapper (mono_monitor_enter_v4, "mono_monitor_enter_v4", "void obj ptr");
+	register_icall_no_wrapper (mono_monitor_enter_fast, "mono_monitor_enter_fast", "int obj");
+	register_icall_no_wrapper (mono_monitor_enter_v4_fast, "mono_monitor_enter_v4_fast", "int obj ptr");
 
 #ifdef TARGET_IOS
 	register_icall (pthread_getspecific, "pthread_getspecific", "ptr ptr", TRUE);

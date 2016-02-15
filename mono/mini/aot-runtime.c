@@ -4599,7 +4599,7 @@ mono_aot_patch_plt_entry (guint8 *code, guint8 *plt_entry, gpointer *got, mgreg_
  * Returns NULL if the something cannot be loaded.
  */
 gpointer
-mono_aot_plt_resolve (gpointer aot_module, guint32 plt_info_offset, guint8 *code)
+mono_aot_plt_resolve (gpointer aot_module, guint32 plt_info_offset, guint8 *code, MonoError *error)
 {
 #ifdef MONO_ARCH_AOT_SUPPORTED
 	guint8 *p, *target, *plt_entry;
@@ -4607,8 +4607,9 @@ mono_aot_plt_resolve (gpointer aot_module, guint32 plt_info_offset, guint8 *code
 	MonoAotModule *module = (MonoAotModule*)aot_module;
 	gboolean res, no_ftnptr = FALSE;
 	MonoMemPool *mp;
-	MonoError error;
 	gboolean using_gsharedvt = FALSE;
+
+	mono_error_init (error);
 
 	//printf ("DYN: %p %d\n", aot_module, plt_info_offset);
 
@@ -4636,12 +4637,14 @@ mono_aot_plt_resolve (gpointer aot_module, guint32 plt_info_offset, guint8 *code
 	 */
 	if (mono_aot_only && ji.type == MONO_PATCH_INFO_METHOD && !ji.data.method->is_generic && !mono_method_check_context_used (ji.data.method) && !(ji.data.method->iflags & METHOD_IMPL_ATTRIBUTE_SYNCHRONIZED) &&
 		!mono_method_needs_static_rgctx_invoke (ji.data.method, FALSE) && !using_gsharedvt) {
-		target = (guint8 *)mono_jit_compile_method (ji.data.method, &error);
-		if (!mono_error_ok (&error))
-			mono_error_raise_exception (&error);
+		target = (guint8 *)mono_jit_compile_method (ji.data.method, error);
+		if (!mono_error_ok (error))
+			return NULL;
 		no_ftnptr = TRUE;
 	} else {
-		target = (guint8 *)mono_resolve_patch_target (NULL, mono_domain_get (), NULL, &ji, TRUE);
+		target = (guint8 *)mono_resolve_patch_target_checked (NULL, mono_domain_get (), NULL, &ji, TRUE, error);
+		if (!mono_error_ok (error))
+			return NULL;
 	}
 
 	/*
@@ -4729,7 +4732,7 @@ mono_aot_get_plt_entry (guint8 *code)
 		return NULL;
 
 #ifdef TARGET_ARM
-	if (is_thumb_code (amodule, code))
+	if (is_thumb_code (amodule, code - 4))
 		return mono_arm_get_thumb_plt_entry (code);
 #endif
 
@@ -5266,7 +5269,7 @@ get_numerous_trampoline (MonoAotTrampoline tramp_type, int n_got_slots, MonoAotM
 #define	MONOTOUCH_TRAMPOLINES_ERROR ""
 #endif
 	if (amodule->trampoline_index [tramp_type] == amodule->info.num_trampolines [tramp_type]) {
-		g_error ("Ran out of trampolines of type %d in '%s' (%d)%s\n", 
+		g_error ("Ran out of trampolines of type %d in '%s' (limit %d)%s\n", 
 				 tramp_type, image ? image->name : "mscorlib", amodule->info.num_trampolines [tramp_type], MONOTOUCH_TRAMPOLINES_ERROR);
 	}
 	index = amodule->trampoline_index [tramp_type] ++;
@@ -5728,7 +5731,7 @@ mono_aot_get_plt_entry (guint8 *code)
 }
 
 gpointer
-mono_aot_plt_resolve (gpointer aot_module, guint32 plt_info_offset, guint8 *code)
+mono_aot_plt_resolve (gpointer aot_module, guint32 plt_info_offset, guint8 *code, MonoError *error)
 {
 	return NULL;
 }
