@@ -225,6 +225,9 @@ static gboolean shutting_down = FALSE;
 
 static gint32 managed_thread_id_counter = 0;
 
+/* Class lazy loading functions */
+static GENERATE_GET_CLASS_WITH_CACHE (appdomain_unloaded_exception, System, AppDomainUnloadedException)
+
 static void
 mono_threads_lock (void)
 {
@@ -4325,6 +4328,7 @@ static MonoException*
 mono_thread_execute_interruption (void)
 {
 	MonoInternalThread *thread = mono_thread_internal_current ();
+	MonoThread *sys_thread = mono_thread_current ();
 
 	LOCK_THREAD (thread);
 
@@ -4363,11 +4367,11 @@ mono_thread_execute_interruption (void)
 		
 		mono_thread_exit ();
 		return NULL;
-	} else if (thread->pending_exception) {
+	} else if (sys_thread->pending_exception) {
 		MonoException *exc;
 
-		exc = thread->pending_exception;
-		thread->pending_exception = NULL;
+		exc = sys_thread->pending_exception;
+		sys_thread->pending_exception = NULL;
 
         UNLOCK_THREAD (thread);
         return exc;
@@ -4519,6 +4523,7 @@ MonoException*
 mono_thread_get_and_clear_pending_exception (void)
 {
 	MonoInternalThread *thread = mono_thread_internal_current ();
+	MonoThread *sys_thread = mono_thread_current ();
 
 	/* The thread may already be stopping */
 	if (thread == NULL)
@@ -4528,10 +4533,10 @@ mono_thread_get_and_clear_pending_exception (void)
 		return mono_thread_execute_interruption ();
 	}
 	
-	if (thread->pending_exception) {
-		MonoException *exc = thread->pending_exception;
+	if (sys_thread->pending_exception) {
+		MonoException *exc = sys_thread->pending_exception;
 
-		thread->pending_exception = NULL;
+		sys_thread->pending_exception = NULL;
 		return exc;
 	}
 
@@ -4547,7 +4552,7 @@ mono_thread_get_and_clear_pending_exception (void)
 void
 mono_set_pending_exception (MonoException *exc)
 {
-	MonoInternalThread *thread = mono_thread_internal_current ();
+	MonoThread *thread = mono_thread_current ();
 
 	/* The thread may already be stopping */
 	if (thread == NULL)
@@ -4959,13 +4964,7 @@ mono_thread_internal_check_for_interruption_critical (MonoInternalThread *thread
 static inline gboolean
 is_appdomainunloaded_exception (MonoClass *klass)
 {
-	static MonoClass *app_domain_unloaded_exception_klass = NULL;
-
-	if (!app_domain_unloaded_exception_klass)
-		app_domain_unloaded_exception_klass = mono_class_from_name (mono_defaults.corlib, "System", "AppDomainUnloadedException");
-	g_assert (app_domain_unloaded_exception_klass);
-
-	return klass == app_domain_unloaded_exception_klass;
+	return klass == mono_class_get_appdomain_unloaded_exception_class ();
 }
 
 static inline gboolean

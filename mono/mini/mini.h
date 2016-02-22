@@ -1893,6 +1893,43 @@ typedef struct {
 	int methods_without_llvm;
 	char *max_ratio_method;
 	char *biggest_method;
+	double jit_method_to_ir;
+	double jit_liveness_handle_exception_clauses;
+	double jit_handle_out_of_line_bblock;
+	double jit_decompose_long_opts;
+	double jit_local_cprop;
+	double jit_local_emulate_ops;
+	double jit_optimize_branches;
+	double jit_handle_global_vregs;
+	double jit_local_deadce;
+	double jit_local_alias_analysis;
+	double jit_if_conversion;
+	double jit_bb_ordering;
+	double jit_compile_dominator_info;
+	double jit_compute_natural_loops;
+	double jit_insert_safepoints;
+	double jit_ssa_compute;
+	double jit_ssa_cprop;
+	double jit_ssa_deadce;
+	double jit_perform_abc_removal;
+	double jit_ssa_remove;
+	double jit_local_cprop2;
+	double jit_handle_global_vregs2;
+	double jit_local_deadce2;
+	double jit_optimize_branches2;
+	double jit_decompose_vtype_opts;
+	double jit_decompose_array_access_opts;
+	double jit_liveness_handle_exception_clauses2;
+	double jit_analyze_liveness;
+	double jit_linear_scan;
+	double jit_arch_allocate_vars;
+	double jit_spill_global_vars;
+	double jit_local_cprop3;
+	double jit_local_deadce3;
+	double jit_codegen;
+	double jit_create_jit_info;
+	double jit_gc_create_gc_map;
+	double jit_save_seq_point_info;
 	double jit_time;
 	gboolean enabled;
 } MonoJitStats;
@@ -2323,8 +2360,7 @@ MonoJumpInfo* mono_patch_info_dup_mp        (MonoMemPool *mp, MonoJumpInfo *patc
 guint     mono_patch_info_hash (gconstpointer data);
 gint      mono_patch_info_equal (gconstpointer ka, gconstpointer kb);
 MonoJumpInfo *mono_patch_info_list_prepend  (MonoJumpInfo *list, int ip, MonoJumpInfoType type, gconstpointer target);
-gpointer  mono_resolve_patch_target         (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *patch_info, gboolean run_cctors) MONO_LLVM_INTERNAL;
-gpointer  mono_resolve_patch_target_checked (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *patch_info, gboolean run_cctors, MonoError *error) MONO_LLVM_INTERNAL;
+gpointer  mono_resolve_patch_target         (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *patch_info, gboolean run_cctors, MonoError *error) MONO_LLVM_INTERNAL;
 gpointer  mono_jit_find_compiled_method_with_jit_info (MonoDomain *domain, MonoMethod *method, MonoJitInfo **ji);
 gpointer  mono_jit_find_compiled_method     (MonoDomain *domain, MonoMethod *method);
 gpointer  mono_jit_compile_method           (MonoMethod *method, MonoError *error);
@@ -3009,6 +3045,18 @@ void mono_cfg_add_try_hole (MonoCompile *cfg, MonoExceptionClause *clause, guint
 void mono_cfg_set_exception (MonoCompile *cfg, int type);
 void mono_cfg_set_exception_invalid_program (MonoCompile *cfg, char *msg);
 
+#define MONO_TIME_TRACK(a, phase) \
+	{ \
+		GTimer *timer = mono_time_track_start (); \
+		(phase) ; \
+		mono_time_track_end (&(a), timer); \
+	}
+
+GTimer *mono_time_track_start (void);
+void mono_time_track_end (double *time, GTimer *timer);
+
+void mono_update_jit_stats (MonoCompile *cfg);
+
 gboolean mini_type_is_reference (MonoType *type);
 gboolean mini_type_is_vtype (MonoType *t) MONO_LLVM_INTERNAL;
 gboolean mini_type_var_is_vt (MonoType *type) MONO_LLVM_INTERNAL;
@@ -3115,6 +3163,11 @@ void mono_cross_helpers_run (void);
 /*
  * Signal handling
  */
+
+#ifdef DISABLE_HW_TRAPS
+ // Signal handlers not available
+#define MONO_ARCH_NEED_DIV_CHECK 1
+#endif
 
 void MONO_SIG_HANDLER_SIGNATURE (mono_sigfpe_signal_handler) ;
 void MONO_SIG_HANDLER_SIGNATURE (mono_sigill_signal_handler) ;

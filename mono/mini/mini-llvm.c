@@ -265,7 +265,7 @@ static void init_jit_module (MonoDomain *domain);
 static void emit_dbg_loc (EmitContext *ctx, LLVMBuilderRef builder, const unsigned char *cil_code);
 static LLVMValueRef emit_dbg_subprogram (EmitContext *ctx, MonoCompile *cfg, LLVMValueRef method, const char *name);
 static void emit_dbg_info (MonoLLVMModule *module, const char *filename, const char *cu_name);
-
+static void emit_cond_system_exception (EmitContext *ctx, MonoBasicBlock *bb, const char *exc_type, LLVMValueRef cmp);
 
 static inline void
 set_failure (EmitContext *ctx, const char *message)
@@ -1057,12 +1057,17 @@ static gpointer
 resolve_patch (MonoCompile *cfg, MonoJumpInfoType type, gconstpointer target)
 {
 	MonoJumpInfo ji;
+	MonoError error;
+	gpointer res;
 
 	memset (&ji, 0, sizeof (ji));
 	ji.type = type;
 	ji.data.target = target;
 
-	return mono_resolve_patch_target (cfg->method, cfg->domain, NULL, &ji, FALSE);
+	res = mono_resolve_patch_target (cfg->method, cfg->domain, NULL, &ji, FALSE, &error);
+	mono_error_assert_ok (&error);
+
+	return res;
 }
 
 /*
@@ -1861,8 +1866,19 @@ emit_load_general (EmitContext *ctx, MonoBasicBlock *bb, LLVMBuilderRef *builder
 	const char *intrins_name;
 	LLVMValueRef args [16], res;
 	LLVMTypeRef addr_type;
+	gboolean use_intrinsics = TRUE;
 
+#if LLVM_API_VERSION > 100
 	if (is_faulting && bb->region != -1 && !ctx->cfg->llvm_only) {
+		/* The llvm.mono.load/store intrinsics are not supported by this llvm version, emit an explicit null check instead */
+		LLVMValueRef cmp = LLVMBuildICmp (*builder_ref, LLVMIntEQ, addr, LLVMConstNull (LLVMTypeOf (addr)), "");
+		emit_cond_system_exception (ctx, bb, "NullReferenceException", cmp);
+		*builder_ref = ctx->builder;
+		use_intrinsics = FALSE;
+	}
+#endif
+
+	if (is_faulting && bb->region != -1 && !ctx->cfg->llvm_only && use_intrinsics) {
 		LLVMAtomicOrdering ordering;
 
 		switch (barrier) {
@@ -1950,8 +1966,19 @@ emit_store_general (EmitContext *ctx, MonoBasicBlock *bb, LLVMBuilderRef *builde
 {
 	const char *intrins_name;
 	LLVMValueRef args [16];
+	gboolean use_intrinsics = TRUE;
 
+#if LLVM_API_VERSION > 100
 	if (is_faulting && bb->region != -1 && !ctx->cfg->llvm_only) {
+		/* The llvm.mono.load/store intrinsics are not supported by this llvm version, emit an explicit null check instead */
+		LLVMValueRef cmp = LLVMBuildICmp (*builder_ref, LLVMIntEQ, addr, LLVMConstNull (LLVMTypeOf (addr)), "");
+		emit_cond_system_exception (ctx, bb, "NullReferenceException", cmp);
+		*builder_ref = ctx->builder;
+		use_intrinsics = FALSE;
+	}
+#endif
+
+	if (is_faulting && bb->region != -1 && !ctx->cfg->llvm_only && use_intrinsics) {
 		LLVMAtomicOrdering ordering;
 
 		switch (barrier) {
@@ -2030,8 +2057,7 @@ emit_cond_system_exception (EmitContext *ctx, MonoBasicBlock *bb, const char *ex
 
 	LLVMBuildCondBr (ctx->builder, cmp, ex_bb, noex_bb);
 
-	exc_class = mono_class_from_name (mono_get_corlib (), "System", exc_type);
-	g_assert (exc_class);
+	exc_class = mono_class_load_from_name (mono_get_corlib (), "System", exc_type);
 
 	/* Emit exception throwing code */
 	ctx->builder = builder = create_builder (ctx);
@@ -3199,11 +3225,14 @@ process_call (EmitContext *ctx, MonoBasicBlock *bb, LLVMBuilderRef *builder_ref,
 				if (cfg->abs_patches) {
 					MonoJumpInfo *abs_ji = (MonoJumpInfo*)g_hash_table_lookup (cfg->abs_patches, call->fptr);
 					if (abs_ji) {
+						MonoError error;
+
 						/*
 						 * FIXME: Some trampolines might have
 						 * their own calling convention on some platforms.
 						 */
-						target = mono_resolve_patch_target (cfg->method, cfg->domain, NULL, abs_ji, FALSE);
+						target = mono_resolve_patch_target (cfg->method, cfg->domain, NULL, abs_ji, FALSE, &error);
+						mono_error_assert_ok (&error);
 						LLVMAddGlobalMapping (ctx->module->ee, callee, target);
 					}
 				}
@@ -3440,6 +3469,11 @@ process_call (EmitContext *ctx, MonoBasicBlock *bb, LLVMBuilderRef *builder_ref,
 		break;
 	case LLVMArgVtypeRetAddr:
 	case LLVMArgVtypeByRef:
+		if (MONO_CLASS_IS_SIMD (ctx->cfg, mono_class_from_mono_type (sig->ret))) {
+			/* Some opcodes like STOREX_MEMBASE access these by value */
+			g_assert (addresses [call->inst.dreg]);
+			values [ins->dreg] = LLVMBuildLoad (builder, convert_full (ctx, addresses [call->inst.dreg], LLVMPointerType (type_to_llvm_type (ctx, sig->ret), 0), FALSE), "");
+		}
 		break;
 	case LLVMArgScalarRetAddr:
 		/* Normal scalar returned using a vtype return argument */
@@ -4839,7 +4873,7 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			break;
 		case OP_FCONV_TO_U1:
 		case OP_RCONV_TO_U1:
-			values [ins->dreg] = LLVMBuildZExt (builder, LLVMBuildFPToUI (builder, lhs, LLVMInt8Type (), dname), LLVMInt32Type (), "");
+			values [ins->dreg] = LLVMBuildZExt (builder, LLVMBuildTrunc (builder, LLVMBuildFPToUI (builder, lhs, IntPtrType (), dname), LLVMInt8Type (), ""), LLVMInt32Type (), "");
 			break;
 		case OP_FCONV_TO_I2:
 		case OP_RCONV_TO_I2:
@@ -5001,7 +5035,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 				 * they can't fail, allowing them to be hoisted out of loops.
 				 */
 				set_invariant_load_flag (values [ins->dreg]);
+#if LLVM_API_VERSION < 100
 				set_metadata_flag (values [ins->dreg], "mono.nofail.load");
+#endif
 			}
 
 			if (sext)
@@ -7998,8 +8034,6 @@ mono_llvm_emit_aot_module (const char *filename, const char *cu_name)
 	emit_llvm_used (&aot_module);
 	emit_dbg_info (&aot_module, filename, cu_name);
 	emit_aot_file_info (&aot_module);
-
-	mono_llvm_create_di_compile_unit (aot_module.lmodule);
 
 	/*
 	 * Replace GOT entries for directly callable methods with the methods themselves.

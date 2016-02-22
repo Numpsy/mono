@@ -143,6 +143,12 @@ static void init_safe_handle (void);
 static void*
 ves_icall_marshal_alloc (gulong size);
 
+/* Lazy class loading functions */
+static GENERATE_GET_CLASS_WITH_CACHE (string_builder, System.Text, StringBuilder)
+static GENERATE_GET_CLASS_WITH_CACHE (date_time, System, DateTime)
+static GENERATE_TRY_GET_CLASS_WITH_CACHE (unmanaged_function_pointer_attribute, System.Runtime.InteropServices, UnmanagedFunctionPointerAttribute)
+static GENERATE_TRY_GET_CLASS_WITH_CACHE (icustom_marshaler, System.Runtime.InteropServices, ICustomMarshaler)
+
 /* MonoMethod pointers to SafeHandle::DangerousAddRef and ::DangerousRelease */
 static MonoMethod *sh_dangerous_add_ref;
 static MonoMethod *sh_dangerous_release;
@@ -152,9 +158,9 @@ static void
 init_safe_handle ()
 {
 	sh_dangerous_add_ref = mono_class_get_method_from_name (
-		mono_defaults.safehandle_class, "DangerousAddRef", 1);
+		mono_class_try_get_safehandle_class (), "DangerousAddRef", 1);
 	sh_dangerous_release = mono_class_get_method_from_name (
-		mono_defaults.safehandle_class, "DangerousRelease", 0);
+		mono_class_try_get_safehandle_class (), "DangerousRelease", 0);
 }
 
 static void
@@ -390,15 +396,11 @@ mono_marshal_use_aot_wrappers (gboolean use)
 static void
 parse_unmanaged_function_pointer_attr (MonoClass *klass, MonoMethodPInvoke *piinfo)
 {
-	static MonoClass *UnmanagedFunctionPointerAttribute;
 	MonoCustomAttrInfo *cinfo;
 	MonoReflectionUnmanagedFunctionPointerAttribute *attr;
 
-	if (!UnmanagedFunctionPointerAttribute)
-		UnmanagedFunctionPointerAttribute = mono_class_from_name (mono_defaults.corlib, "System.Runtime.InteropServices", "UnmanagedFunctionPointerAttribute");
-
 	/* The attribute is only available in Net 2.0 */
-	if (UnmanagedFunctionPointerAttribute) {
+	if (mono_class_try_get_unmanaged_function_pointer_attribute_class ()) {
 		/* 
 		 * The pinvoke attributes are stored in a real custom attribute so we have to
 		 * construct it.
@@ -406,7 +408,7 @@ parse_unmanaged_function_pointer_attr (MonoClass *klass, MonoMethodPInvoke *piin
 		cinfo = mono_custom_attrs_from_class (klass);
 		if (cinfo && !mono_runtime_get_no_exec ()) {
 			MonoError error;
-			attr = (MonoReflectionUnmanagedFunctionPointerAttribute*)mono_custom_attrs_get_attr_checked (cinfo, UnmanagedFunctionPointerAttribute, &error);
+			attr = (MonoReflectionUnmanagedFunctionPointerAttribute*)mono_custom_attrs_get_attr_checked (cinfo, mono_class_try_get_unmanaged_function_pointer_attribute_class (), &error);
 			if (attr) {
 				piinfo->piflags = (attr->call_conv << 8) | (attr->charset ? (attr->charset - 1) * 2 : 1) | attr->set_last_error;
 			} else {
@@ -724,7 +726,7 @@ mono_string_builder_new (int starting_string_length)
 		MonoMethodDesc *desc;
 		MonoMethod *m;
 
-		string_builder_class = mono_class_from_name (mono_defaults.corlib, "System.Text", "StringBuilder");
+		string_builder_class = mono_class_get_string_builder_class ();
 		g_assert (string_builder_class);
 		desc = mono_method_desc_new (":.ctor(int)", FALSE);
 		m = mono_method_desc_search_in_class (desc, string_builder_class);
@@ -1803,7 +1805,7 @@ emit_struct_conv_full (MonoMethodBuilder *mb, MonoClass *klass, gboolean to_obje
 		return;
 	}
 
-	if (klass != mono_defaults.safehandle_class) {
+	if (klass != mono_class_try_get_safehandle_class ()) {
 		if ((klass->flags & TYPE_ATTRIBUTE_LAYOUT_MASK) == TYPE_ATTRIBUTE_AUTO_LAYOUT) {
 			char *msg = g_strdup_printf ("Type %s which is passed to unmanaged code must have a StructLayout attribute.",
 										 mono_type_full_name (&klass->byval_arg));
@@ -1833,7 +1835,7 @@ emit_struct_conv_full (MonoMethodBuilder *mb, MonoClass *klass, gboolean to_obje
 			usize = info->fields [i + 1].offset - info->fields [i].offset;
 		}
 
-		if (klass != mono_defaults.safehandle_class){
+		if (klass != mono_class_try_get_safehandle_class ()){
 			/* 
 			 * FIXME: Should really check for usize==0 and msize>0, but we apply 
 			 * the layout to the managed structure as well.
@@ -4332,7 +4334,7 @@ emit_marshal_custom (EmitMarshalContext *m, int argnum, MonoType *t,
 	int pos2;
 
 	if (!ICustomMarshaler) {
-		MonoClass *klass = mono_class_from_name (mono_defaults.corlib, "System.Runtime.InteropServices", "ICustomMarshaler");
+		MonoClass *klass = mono_class_try_get_icustom_marshaler_class ();
 		if (!klass) {
 			exception_msg = g_strdup ("Current profile doesn't support ICustomMarshaler");
 			goto handle_exception;
@@ -4684,7 +4686,7 @@ emit_marshal_vtype (EmitMarshalContext *m, int argnum, MonoType *t,
 
 	klass = mono_class_from_mono_type (t);
 
-	date_time_class = mono_class_from_name_cached (mono_defaults.corlib, "System", "DateTime");
+	date_time_class = mono_class_get_date_time_class ();
 
 	switch (action) {
 	case MARSHAL_ACTION_CONV_IN:
@@ -7066,8 +7068,8 @@ emit_marshal (EmitMarshalContext *m, int argnum, MonoType *t,
 			return mono_cominterop_emit_marshal_safearray (m, argnum, t, spec, conv_arg, conv_arg_type, action);
 #endif
 
-		if (mono_defaults.safehandle_class != NULL && t->data.klass &&
-		    mono_class_is_subclass_of (t->data.klass,  mono_defaults.safehandle_class, FALSE))
+		if (mono_class_try_get_safehandle_class () != NULL && t->data.klass &&
+		    mono_class_is_subclass_of (t->data.klass,  mono_class_try_get_safehandle_class (), FALSE))
 			return emit_marshal_safehandle (m, argnum, t, spec, conv_arg, conv_arg_type, action);
 		
 		return emit_marshal_object (m, argnum, t, spec, conv_arg, conv_arg_type, action);
@@ -8004,7 +8006,6 @@ mono_marshal_set_callconv_from_modopt (MonoMethod *method, MonoMethodSignature *
 MonoMethod *
 mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, uint32_t target_handle)
 {
-	static MonoClass *UnmanagedFunctionPointerAttribute;
 	MonoMethodSignature *sig, *csig, *invoke_sig;
 	MonoMethodBuilder *mb;
 	MonoMethod *res, *invoke;
@@ -8059,12 +8060,8 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 
 	mono_marshal_set_callconv_from_modopt (invoke, csig);
 
-	/* Handle the UnmanagedFunctionPointerAttribute */
-	if (!UnmanagedFunctionPointerAttribute)
-		UnmanagedFunctionPointerAttribute = mono_class_from_name (mono_defaults.corlib, "System.Runtime.InteropServices", "UnmanagedFunctionPointerAttribute");
-
 	/* The attribute is only available in Net 2.0 */
-	if (UnmanagedFunctionPointerAttribute) {
+	if (mono_class_try_get_unmanaged_function_pointer_attribute_class ()) {
 		MonoCustomAttrInfo *cinfo;
 		MonoCustomAttrEntry *attr;
 
@@ -8078,7 +8075,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 		if (cinfo) {
 			for (i = 0; i < cinfo->num_attrs; ++i) {
 				MonoClass *ctor_class = cinfo->attrs [i].ctor->klass;
-				if (mono_class_has_parent (ctor_class, UnmanagedFunctionPointerAttribute)) {
+				if (mono_class_has_parent (ctor_class, mono_class_try_get_unmanaged_function_pointer_attribute_class ())) {
 					attr = &cinfo->attrs [i];
 					break;
 				}
