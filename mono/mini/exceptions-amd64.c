@@ -262,7 +262,7 @@ mono_arch_get_call_filter (MonoTrampInfo **info, gboolean aot)
 			continue;
 #endif
 		if (AMD64_IS_CALLEE_SAVED_REG (i) && i != AMD64_RBP)
-			amd64_mov_reg_membase (code, AMD64_RBX, AMD64_ARG_REG1, gregs_offset + (i * 8), 8);
+			amd64_mov_reg_membase (code, i, AMD64_ARG_REG1, gregs_offset + (i * 8), 8);
 	}
 	/* load exc register */
 	amd64_mov_reg_membase (code, AMD64_RAX, AMD64_ARG_REG1,  gregs_offset + (AMD64_RAX * 8), 8);
@@ -306,18 +306,20 @@ mono_amd64_throw_exception (guint64 dummy1, guint64 dummy2, guint64 dummy3, guin
 							guint64 dummy5, guint64 dummy6,
 							MonoContext *mctx, MonoObject *exc, gboolean rethrow)
 {
+	MonoError error;
 	MonoContext ctx;
 
 	/* mctx is on the caller's stack */
 	memcpy (&ctx, mctx, sizeof (MonoContext));
 
-	if (mono_object_isinst (exc, mono_defaults.exception_class)) {
+	if (mono_object_isinst_checked (exc, mono_defaults.exception_class, &error)) {
 		MonoException *mono_ex = (MonoException*)exc;
 		if (!rethrow) {
 			mono_ex->stack_trace = NULL;
 			mono_ex->trace_ips = NULL;
 		}
 	}
+	mono_error_assert_ok (&error);
 
 	/* adjust eip so that it point into the call instruction */
 	ctx.gregs [AMD64_RIP] --;
@@ -415,10 +417,7 @@ get_throw_trampoline (MonoTrampInfo **info, gboolean rethrow, gboolean corlib, g
 	amd64_lea_membase (code, AMD64_RAX, AMD64_RSP, stack_size + sizeof(mgreg_t));
 	amd64_mov_membase_reg (code, AMD64_RSP, regs_offset + (AMD64_RSP * sizeof(mgreg_t)), X86_EAX, sizeof(mgreg_t));
 	/* Save IP */
-	if (llvm_abs)
-		amd64_alu_reg_reg (code, X86_XOR, AMD64_RAX, AMD64_RAX);
-	else
-		amd64_mov_reg_membase (code, AMD64_RAX, AMD64_RSP, stack_size, sizeof(mgreg_t));
+	amd64_mov_reg_membase (code, AMD64_RAX, AMD64_RSP, stack_size, sizeof(mgreg_t));
 	amd64_mov_membase_reg (code, AMD64_RSP, regs_offset + (AMD64_RIP * sizeof(mgreg_t)), AMD64_RAX, sizeof(mgreg_t));
 	/* Set arg1 == ctx */
 	amd64_lea_membase (code, AMD64_RAX, AMD64_RSP, ctx_offset);
@@ -432,14 +431,14 @@ get_throw_trampoline (MonoTrampInfo **info, gboolean rethrow, gboolean corlib, g
 	if (resume_unwind) {
 		amd64_mov_membase_imm (code, AMD64_RSP, arg_offsets [2], 0, sizeof(mgreg_t));
 	} else if (corlib) {
-		amd64_mov_membase_reg (code, AMD64_RSP, arg_offsets [2], AMD64_ARG_REG2, sizeof(mgreg_t));
 		if (llvm_abs)
-			/* 
-			 * The caller is LLVM code which passes the absolute address not a pc offset,
-			 * so compensate by passing 0 as 'rip' and passing the negated abs address as
-			 * the pc offset.
+			/*
+			 * The caller doesn't pass in a pc/pc offset, instead we simply use the
+			 * caller ip. Negate the pc adjustment done in mono_amd64_throw_corlib_exception ().
 			 */
-			amd64_neg_membase (code, AMD64_RSP, arg_offsets [2]);
+			amd64_mov_membase_imm (code, AMD64_RSP, arg_offsets [2], 1, sizeof(mgreg_t));
+		else
+			amd64_mov_membase_reg (code, AMD64_RSP, arg_offsets [2], AMD64_ARG_REG2, sizeof(mgreg_t));
 	} else {
 		amd64_mov_membase_imm (code, AMD64_RSP, arg_offsets [2], rethrow, sizeof(mgreg_t));
 	}

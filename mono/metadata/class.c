@@ -905,11 +905,7 @@ mono_class_inflate_generic_type (MonoType *type, MonoGenericContext *context)
 	MonoError error;
 	MonoType *result;
 	result = mono_class_inflate_generic_type_checked (type, context, &error);
-
-	if (!mono_error_ok (&error)) {
-		mono_error_cleanup (&error);
-		return NULL;
-	}
+	mono_error_cleanup (&error);
 	return result;
 }
 
@@ -955,6 +951,11 @@ mono_class_inflate_generic_type_no_copy (MonoImage *image, MonoType *type, MonoG
 	return inflated;
 }
 
+/*
+ * mono_class_inflate_generic_class:
+ *
+ *   Inflate the class @gklass with @context. Set @error on failure.
+ */
 MonoClass*
 mono_class_inflate_generic_class_checked (MonoClass *gklass, MonoGenericContext *context, MonoError *error)
 {
@@ -969,24 +970,6 @@ mono_class_inflate_generic_class_checked (MonoClass *gklass, MonoGenericContext 
 
 	return res;
 }
-/*
- * mono_class_inflate_generic_class:
- *
- *   Inflate the class GKLASS with CONTEXT.
- */
-MonoClass*
-mono_class_inflate_generic_class (MonoClass *gklass, MonoGenericContext *context)
-{
-	MonoError error;
-	MonoClass *res;
-
-	res = mono_class_inflate_generic_class_checked (gklass, context, &error);
-	g_assert (mono_error_ok (&error)); /*FIXME proper error handling*/
-
-	return res;
-}
-
-
 
 static MonoGenericContext
 inflate_generic_context (MonoGenericContext *context, MonoGenericContext *inflate_with, MonoError *error)
@@ -1497,6 +1480,7 @@ mono_class_setup_fields (MonoClass *klass)
 	int i, blittable = TRUE;
 	guint32 real_size = 0;
 	guint32 packing_size = 0;
+	int instance_size;
 	gboolean explicit_size;
 	MonoClassField *field;
 	MonoGenericContainer *container = NULL;
@@ -1572,7 +1556,7 @@ mono_class_setup_fields (MonoClass *klass)
 		}
 	}
 
-	klass->instance_size = 0;
+	instance_size = 0;
 	if (!klass->rank)
 		klass->sizes.class_size = 0;
 
@@ -1586,13 +1570,13 @@ mono_class_setup_fields (MonoClass *klass)
 				return;
 			}
 		}
-		klass->instance_size += klass->parent->instance_size;
+		instance_size += klass->parent->instance_size;
 		klass->min_align = klass->parent->min_align;
 		/* we use |= since it may have been set already */
 		klass->has_references |= klass->parent->has_references;
 		blittable = klass->parent->blittable;
 	} else {
-		klass->instance_size = sizeof (MonoObject);
+		instance_size = sizeof (MonoObject);
 		klass->min_align = 1;
 	}
 
@@ -1614,14 +1598,16 @@ mono_class_setup_fields (MonoClass *klass)
 			return;
 		}
 		klass->packing_size = packing_size;
-		real_size += klass->instance_size;
+		real_size += instance_size;
 	}
 
 	if (!top) {
 		if (explicit_size && real_size) {
-			klass->instance_size = MAX (real_size, klass->instance_size);
+			instance_size = MAX (real_size, instance_size);
 		}
 		klass->blittable = blittable;
+		if (!klass->instance_size)
+			klass->instance_size = instance_size;
 		mono_memory_barrier ();
 		klass->size_inited = 1;
 		klass->fields_inited = 1;
@@ -1735,12 +1721,12 @@ mono_class_setup_fields (MonoClass *klass)
 		return;
 	}
 	if (explicit_size && real_size) {
-		klass->instance_size = MAX (real_size, klass->instance_size);
+		instance_size = MAX (real_size, instance_size);
 	}
 
 	if (mono_class_has_failure (klass))
 		return;
-	mono_class_layout_fields (klass);
+	mono_class_layout_fields (klass, instance_size);
 
 	/*valuetypes can't be neither bigger than 1Mb or empty. */
 	if (klass->valuetype && (klass->instance_size <= 0 || klass->instance_size > (0x100000 + sizeof (MonoObject))))
@@ -1821,6 +1807,7 @@ type_has_references (MonoClass *klass, MonoType *ftype)
 /*
  * mono_class_layout_fields:
  * @class: a class
+ * @instance_size: base instance size
  *
  * Compute the placement of fields inside an object or struct, according to
  * the layout rules and set the following fields in @class:
@@ -1833,7 +1820,7 @@ type_has_references (MonoClass *klass, MonoType *ftype)
  * LOCKING: this is supposed to be called with the loader lock held.
  */
 void
-mono_class_layout_fields (MonoClass *klass)
+mono_class_layout_fields (MonoClass *klass, int instance_size)
 {
 	int i;
 	const int top = klass->field.count;
@@ -1914,7 +1901,6 @@ mono_class_layout_fields (MonoClass *klass)
 	/*
 	 * Compute field layout and total size (not considering static fields)
 	 */
-
 	switch (layout) {
 	case TYPE_ATTRIBUTE_AUTO_LAYOUT:
 	case TYPE_ATTRIBUTE_SEQUENTIAL_LAYOUT:
@@ -1990,11 +1976,11 @@ mono_class_layout_fields (MonoClass *klass)
 				real_size = field->offset + size;
 			}
 
-			klass->instance_size = MAX (real_size, klass->instance_size);
+			instance_size = MAX (real_size, instance_size);
        
-			if (klass->instance_size & (klass->min_align - 1)) {
-				klass->instance_size += klass->min_align - 1;
-				klass->instance_size &= ~(klass->min_align - 1);
+			if (instance_size & (klass->min_align - 1)) {
+				instance_size += klass->min_align - 1;
+				instance_size &= ~(klass->min_align - 1);
 			}
 		}
 		break;
@@ -2079,10 +2065,10 @@ mono_class_layout_fields (MonoClass *klass)
 			g_free (ref_bitmap);
 		}
 
-		klass->instance_size = MAX (real_size, klass->instance_size);
-		if (klass->instance_size & (klass->min_align - 1)) {
-			klass->instance_size += klass->min_align - 1;
-			klass->instance_size &= ~(klass->min_align - 1);
+		instance_size = MAX (real_size, instance_size);
+		if (instance_size & (klass->min_align - 1)) {
+			instance_size += klass->min_align - 1;
+			instance_size &= ~(klass->min_align - 1);
 		}
 		break;
 	}
@@ -2098,11 +2084,17 @@ mono_class_layout_fields (MonoClass *klass)
 		 * unaligned accesses otherwise. See #78990 for a testcase.
 		 */
 		if (mono_align_small_structs) {
-			if (klass->instance_size <= sizeof (MonoObject) + sizeof (gpointer))
-				klass->min_align = MAX (klass->min_align, klass->instance_size - sizeof (MonoObject));
+			if (instance_size <= sizeof (MonoObject) + sizeof (gpointer))
+				klass->min_align = MAX (klass->min_align, instance_size - sizeof (MonoObject));
 		}
 	}
 
+	if (klass->instance_size && !klass->image->dynamic) {
+		/* Might be already set using cached info */
+		g_assert (klass->instance_size == instance_size);
+	} else {
+		klass->instance_size = instance_size;
+	}
 	mono_memory_barrier ();
 	klass->size_inited = 1;
 
@@ -3809,6 +3801,7 @@ mono_class_setup_vtable (MonoClass *klass)
 static void
 mono_class_setup_vtable_full (MonoClass *klass, GList *in_setup)
 {
+	MonoError error;
 	MonoMethod **overrides;
 	MonoGenericContext *context;
 	guint32 type_token;
@@ -3859,7 +3852,14 @@ mono_class_setup_vtable_full (MonoClass *klass, GList *in_setup)
 		 * This is true since we don't do layout all over again for them, we simply inflate
 		 * the layout of the parent.
 		 */
-		mono_reflection_get_dynamic_overrides (klass, &overrides, &onum);
+		mono_reflection_get_dynamic_overrides (klass, &overrides, &onum, &error);
+		if (!is_ok (&error)) {
+			mono_loader_unlock ();
+			g_list_remove (in_setup, klass);
+			mono_class_set_failure (klass, MONO_EXCEPTION_TYPE_LOAD, g_strdup_printf("Could not load list of method overrides due to %s", mono_error_get_message (&error)));
+			mono_error_cleanup (&error);
+			return;
+		}
 	} else {
 		/* The following call fails if there are missing methods in the type */
 		/* FIXME it's probably a good idea to avoid this for generic instances. */
@@ -5734,22 +5734,6 @@ mono_class_set_failure_and_error (MonoClass *klass, MonoError *error, const char
 	mono_error_set_type_load_class (error, klass, msg);
 }
 
-static void
-mono_class_set_failure_from_loader_error (MonoClass *klass, MonoError *error, char *msg)
-{
-	MonoLoaderError *lerror = mono_loader_get_last_error ();
-
-	if (lerror) {
-		set_failure_from_loader_error (klass, lerror);
-		mono_error_set_from_loader_error (error);
-		if (msg)
-			g_free (msg);
-	} else {
-		mono_class_set_failure (klass, MONO_EXCEPTION_TYPE_LOAD, msg);
-		mono_error_set_type_load_class (error, klass, msg);
-	}
-}
-
 /**
  * mono_class_create_from_typedef:
  * @image: image where the token is valid
@@ -6780,7 +6764,7 @@ mono_bounded_array_class_get (MonoClass *eclass, guint32 rank, gboolean bounded)
 
 	if (eclass->byval_arg.type == MONO_TYPE_TYPEDBYREF || eclass->byval_arg.type == MONO_TYPE_VOID) {
 		/*Arrays of those two types are invalid.*/
-		mono_class_set_failure (klass, MONO_EXCEPTION_TYPE_LOAD, NULL);
+		mono_class_set_failure (klass, MONO_EXCEPTION_INVALID_PROGRAM, NULL);
 	} else if (eclass->enumtype && !mono_class_enum_basetype (eclass)) {
 		if (!eclass->ref_info_handle || eclass->wastypebuilder) {
 			g_warning ("Only incomplete TypeBuilder objects are allowed to be an enum without base_type");
@@ -7473,7 +7457,7 @@ mono_class_get_checked (MonoImage *image, guint32 type_token, MonoError *error)
 			mono_error_set_bad_image (error, image,"Bad token table for dynamic image: %x", table);
 			return NULL;
 		}
-		klass = (MonoClass *)mono_lookup_dynamic_token (image, type_token, NULL); /*FIXME proper error handling*/
+		klass = (MonoClass *)mono_lookup_dynamic_token (image, type_token, NULL, error);
 		goto done;
 	}
 
@@ -7523,8 +7507,11 @@ mono_type_get_checked (MonoImage *image, guint32 type_token, MonoGenericContext 
 	mono_error_init (error);
 
 	//FIXME: this will not fix the very issue for which mono_type_get_full exists -but how to do it then?
-	if (image_is_dynamic (image))
-		return mono_class_get_type ((MonoClass *)mono_lookup_dynamic_token (image, type_token, context));
+	if (image_is_dynamic (image)) {
+		MonoClass *klass = (MonoClass *)mono_lookup_dynamic_token (image, type_token, context, error);
+		return_val_if_nok (error, NULL);
+		return mono_class_get_type (klass);
+	}
 
 	if ((type_token & 0xff000000) != MONO_TOKEN_TYPE_SPEC) {
 		MonoClass *klass = mono_class_get_checked (image, type_token, error);
@@ -7733,7 +7720,8 @@ mono_class_from_name_case (MonoImage *image, const char* name_space, const char 
 {
 	MonoError error;
 	MonoClass *res = mono_class_from_name_case_checked (image, name_space, name, &error);
-	g_assert (!mono_error_ok (&error));
+	mono_error_cleanup (&error);
+
 	return res;
 }
 
@@ -8035,10 +8023,8 @@ mono_class_from_name (MonoImage *image, const char* name_space, const char *name
 	MonoClass *klass;
 
 	klass = mono_class_from_name_checked (image, name_space, name, &error);
-	if (!mono_error_ok (&error)) {
-		mono_loader_set_error_from_mono_error (&error);
-		mono_error_cleanup (&error); /* FIXME Don't swallow the error */
-	}
+	mono_error_cleanup (&error); /* FIXME Don't swallow the error */
+
 	return klass;
 }
 
@@ -8351,6 +8337,7 @@ mono_gparam_is_assignable_from (MonoClass *target, MonoClass *candidate)
 gboolean
 mono_class_is_assignable_from (MonoClass *klass, MonoClass *oklass)
 {
+	MonoError error;
 	/*FIXME this will cause a lot of irrelevant stuff to be loaded.*/
 	if (!klass->inited)
 		mono_class_init (klass);
@@ -8384,12 +8371,18 @@ mono_class_is_assignable_from (MonoClass *klass, MonoClass *oklass)
 		}
 
 		/* interface_offsets might not be set for dynamic classes */
-		if (oklass->ref_info_handle && !oklass->interface_bitmap)
+		if (oklass->ref_info_handle && !oklass->interface_bitmap) {
 			/* 
 			 * oklass might be a generic type parameter but they have 
 			 * interface_offsets set.
 			 */
- 			return mono_reflection_call_is_assignable_to (oklass, klass);
+ 			gboolean result = mono_reflection_call_is_assignable_to (oklass, klass, &error);
+			if (!is_ok (&error)) {
+				mono_error_cleanup (&error);
+				return FALSE;
+			}
+			return result;
+		}
 		if (!oklass->interface_bitmap)
 			/* Happens with generic instances of not-yet created dynamic types */
 			return FALSE;
@@ -8397,7 +8390,6 @@ mono_class_is_assignable_from (MonoClass *klass, MonoClass *oklass)
 			return TRUE;
 
 		if (mono_class_has_variant_generic_params (klass)) {
-			MonoError error;
 			int i;
 			mono_class_setup_interfaces (oklass, &error);
 			if (!mono_error_ok (&error)) {
@@ -8794,8 +8786,9 @@ mono_ldtoken_checked (MonoImage *image, guint32 token, MonoClass **handle_class,
 
 	if (image_is_dynamic (image)) {
 		MonoClass *tmp_handle_class;
-		gpointer obj = mono_lookup_dynamic_token_class (image, token, TRUE, &tmp_handle_class, context);
+		gpointer obj = mono_lookup_dynamic_token_class (image, token, TRUE, &tmp_handle_class, context, error);
 
+		mono_error_assert_ok (error);
 		g_assert (tmp_handle_class);
 		if (handle_class)
 			*handle_class = tmp_handle_class;
@@ -8875,30 +8868,18 @@ mono_ldtoken_checked (MonoImage *image, guint32 token, MonoClass **handle_class,
 	return NULL;
 }
 
-/**
- * This function might need to call runtime functions so it can't be part
- * of the metadata library.
- */
-static MonoLookupDynamicToken lookup_dynamic = NULL;
-
-void
-mono_install_lookup_dynamic_token (MonoLookupDynamicToken func)
-{
-	lookup_dynamic = func;
-}
-
 gpointer
-mono_lookup_dynamic_token (MonoImage *image, guint32 token, MonoGenericContext *context)
+mono_lookup_dynamic_token (MonoImage *image, guint32 token, MonoGenericContext *context, MonoError *error)
 {
 	MonoClass *handle_class;
-
-	return lookup_dynamic (image, token, TRUE, &handle_class, context);
+	mono_error_init (error);
+	return mono_reflection_lookup_dynamic_token (image, token, TRUE, &handle_class, context, error);
 }
 
 gpointer
-mono_lookup_dynamic_token_class (MonoImage *image, guint32 token, gboolean valid_token, MonoClass **handle_class, MonoGenericContext *context)
+mono_lookup_dynamic_token_class (MonoImage *image, guint32 token, gboolean valid_token, MonoClass **handle_class, MonoGenericContext *context, MonoError *error)
 {
-	return lookup_dynamic (image, token, valid_token, handle_class, context);
+	return mono_reflection_lookup_dynamic_token (image, token, valid_token, handle_class, context, error);
 }
 
 static MonoGetCachedClassInfo get_cached_class_info = NULL;
@@ -10091,6 +10072,9 @@ mono_class_get_exception_for_failure (MonoClass *klass)
 	}
 	case MONO_EXCEPTION_BAD_IMAGE: {
 		return mono_get_exception_bad_image_format ((const char *)exception_data);
+	}
+	case MONO_EXCEPTION_INVALID_PROGRAM: {
+		return mono_exception_from_name_msg (mono_defaults.corlib, "System", "InvalidProgramException", "");
 	}
 	default: {
 		MonoLoaderError *error;

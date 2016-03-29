@@ -915,12 +915,8 @@ typedef struct {
 
 extern MonoStats mono_stats;
 
-typedef gpointer (*MonoTrampoline)       (MonoMethod *method);
-typedef gpointer (*MonoJumpTrampoline)       (MonoDomain *domain, MonoMethod *method, gboolean add_sync_wrapper);
 typedef gpointer (*MonoRemotingTrampoline)       (MonoDomain *domain, MonoMethod *method, MonoRemotingTarget target);
 typedef gpointer (*MonoDelegateTrampoline)       (MonoDomain *domain, MonoClass *klass);
-
-typedef gpointer (*MonoLookupDynamicToken) (MonoImage *image, guint32 token, gboolean valid_token, MonoClass **handle_class, MonoGenericContext *context);
 
 typedef gboolean (*MonoGetCachedClassInfo) (MonoClass *klass, MonoCachedClassInfo *res);
 
@@ -943,7 +939,7 @@ void
 mono_classes_cleanup (void);
 
 void
-mono_class_layout_fields   (MonoClass *klass);
+mono_class_layout_fields   (MonoClass *klass, int instance_size);
 
 void
 mono_class_setup_interface_offsets (MonoClass *klass);
@@ -1010,22 +1006,13 @@ const char*
 mono_class_get_property_default_value (MonoProperty *property, MonoTypeEnum *def_type);
 
 void
-mono_install_trampoline (MonoTrampoline func);
-
-void
-mono_install_jump_trampoline (MonoJumpTrampoline func);
-
-void
 mono_install_delegate_trampoline (MonoDelegateTrampoline func);
 
 gpointer
-mono_lookup_dynamic_token (MonoImage *image, guint32 token, MonoGenericContext *context);
+mono_lookup_dynamic_token (MonoImage *image, guint32 token, MonoGenericContext *context, MonoError *error);
 
 gpointer
-mono_lookup_dynamic_token_class (MonoImage *image, guint32 token, gboolean check_token, MonoClass **handle_class, MonoGenericContext *context);
-
-void
-mono_install_lookup_dynamic_token (MonoLookupDynamicToken func);
+mono_lookup_dynamic_token_class (MonoImage *image, guint32 token, gboolean check_token, MonoClass **handle_class, MonoGenericContext *context, MonoError *error);
 
 gpointer
 mono_runtime_create_jump_trampoline (MonoDomain *domain, MonoMethod *method, gboolean add_sync_wrapper);
@@ -1081,9 +1068,6 @@ mono_metadata_get_inflated_signature (MonoMethodSignature *sig, MonoGenericConte
 
 MonoType*
 mono_class_inflate_generic_type_with_mempool (MonoImage *image, MonoType *type, MonoGenericContext *context, MonoError *error);
-
-MonoClass*
-mono_class_inflate_generic_class (MonoClass *gklass, MonoGenericContext *context);
 
 MonoType*
 mono_class_inflate_generic_type_checked (MonoType *type, MonoGenericContext *context, MonoError *error);
@@ -1164,7 +1148,7 @@ typedef struct {
 #define mono_object_is_transparent_proxy(object) (FALSE)
 #else
 MonoRemoteClass*
-mono_remote_class (MonoDomain *domain, MonoString *class_name, MonoClass *proxy_class);
+mono_remote_class (MonoDomain *domain, MonoString *class_name, MonoClass *proxy_class, MonoError *error);
 
 void
 mono_install_remoting_trampoline (MonoRemotingTrampoline func);
@@ -1426,7 +1410,7 @@ MonoClassField*
 mono_class_get_field_from_name_full (MonoClass *klass, const char *name, MonoType *type);
 
 MonoVTable*
-mono_class_vtable_full (MonoDomain *domain, MonoClass *klass, gboolean raise_on_error);
+mono_class_vtable_full (MonoDomain *domain, MonoClass *klass, MonoError *error);
 
 gboolean
 mono_class_is_assignable_from_slow (MonoClass *target, MonoClass *candidate);

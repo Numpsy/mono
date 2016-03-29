@@ -180,7 +180,9 @@ create_domain_objects (MonoDomain *domain)
 	string_vt = mono_class_vtable (domain, mono_defaults.string_class);
 	string_empty_fld = mono_class_get_field_from_name (mono_defaults.string_class, "Empty");
 	g_assert (string_empty_fld);
-	mono_field_static_set_value (string_vt, string_empty_fld, mono_string_intern (mono_string_new (domain, "")));
+	MonoString *empty_str = mono_string_intern_checked (mono_string_new (domain, ""), &error);
+	mono_error_assert_ok (&error);
+	mono_field_static_set_value (string_vt, string_empty_fld, empty_str);
 
 	/*
 	 * Create an instance early since we can't do it when there is no memory.
@@ -255,7 +257,6 @@ mono_runtime_init_checked (MonoDomain *domain, MonoThreadStartCB start_cb, MonoT
 	mono_install_assembly_postload_search_hook ((MonoAssemblySearchFunc)mono_domain_assembly_postload_search, GUINT_TO_POINTER (FALSE));
 	mono_install_assembly_postload_refonly_search_hook ((MonoAssemblySearchFunc)mono_domain_assembly_postload_search, GUINT_TO_POINTER (TRUE));
 	mono_install_assembly_load_hook (mono_domain_fire_assembly_load, NULL);
-	mono_install_lookup_dynamic_token (mono_reflection_lookup_dynamic_token);
 
 	mono_thread_init (start_cb, attach_cb);
 
@@ -305,6 +306,7 @@ mono_runtime_init_checked (MonoDomain *domain, MonoThreadStartCB start_cb, MonoT
 static int
 mono_get_corlib_version (void)
 {
+	MonoError error;
 	MonoClass *klass;
 	MonoClassField *field;
 	MonoObject *value;
@@ -316,7 +318,8 @@ mono_get_corlib_version (void)
 		return -1;
 	if (! (field->type->attrs & FIELD_ATTRIBUTE_STATIC))
 		return -1;
-	value = mono_field_get_value_object (mono_domain_get (), field, NULL);
+	value = mono_field_get_value_object_checked (mono_domain_get (), field, NULL, &error);
+	mono_error_raise_exception (&error); /* FIXME don't raise here */
 	return *(gint32*)((gchar*)value + sizeof (MonoObject));
 }
 
@@ -1762,7 +1765,7 @@ mono_make_shadow_copy (const char *filename, MonoError *oerror)
 	if (!mono_error_ok (&error)) {
 		mono_error_cleanup (&error);
 		g_free (dir_name);
-		mono_error_set_generic_error (oerror, "System", "ExecutionEngineException", "Failed to create shadow copy (invalid characters in shadow directory name).");
+		mono_error_set_execution_engine (oerror, "Failed to create shadow copy (invalid characters in shadow directory name).");
 		return NULL;
 	}
 
@@ -1777,13 +1780,13 @@ mono_make_shadow_copy (const char *filename, MonoError *oerror)
 	shadow = get_shadow_assembly_location (filename, &error);
 	if (!mono_error_ok (&error)) {
 		mono_error_cleanup (&error);
-		mono_error_set_generic_error (oerror, "System", "ExecutionEngineException", "Failed to create shadow copy (invalid characters in file name).");
+		mono_error_set_execution_engine (oerror, "Failed to create shadow copy (invalid characters in file name).");
 		return NULL;
 	}
 
 	if (ensure_directory_exists (shadow) == FALSE) {
 		g_free (shadow);
-		mono_error_set_generic_error (oerror, "System", "ExecutionEngineException", "Failed to create shadow copy (ensure directory exists).");
+		mono_error_set_execution_engine (oerror, "Failed to create shadow copy (ensure directory exists).");
 		return NULL;
 	}	
 
@@ -1820,7 +1823,7 @@ mono_make_shadow_copy (const char *filename, MonoError *oerror)
 		if (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)
 			return NULL; /* file not found, shadow copy failed */
 
-		mono_error_set_generic_error (oerror, "System", "ExecutionEngineException", "Failed to create shadow copy (CopyFile).");
+		mono_error_set_execution_engine (oerror, "Failed to create shadow copy (CopyFile).");
 		return NULL;
 	}
 
@@ -1839,14 +1842,14 @@ mono_make_shadow_copy (const char *filename, MonoError *oerror)
 	
 	if (copy_result == FALSE)  {
 		g_free (shadow);
-		mono_error_set_generic_error (oerror, "System", "ExecutionEngineException", "Failed to create shadow copy of sibling data (CopyFile).");
+		mono_error_set_execution_engine (oerror, "Failed to create shadow copy of sibling data (CopyFile).");
 		return NULL;
 	}
 
 	/* Create a .ini file containing the original assembly location */
 	if (!shadow_copy_create_ini (shadow, filename)) {
 		g_free (shadow);
-		mono_error_set_generic_error (oerror, "System", "ExecutionEngineException", "Failed to create shadow copy .ini file.");
+		mono_error_set_execution_engine (oerror, "Failed to create shadow copy .ini file.");
 		return NULL;
 	}
 
@@ -2142,10 +2145,11 @@ ves_icall_System_AppDomain_LoadAssembly (MonoAppDomain *ad,  MonoString *assRef,
 void
 ves_icall_System_AppDomain_InternalUnload (gint32 domain_id)
 {
+	MonoException *exc = NULL;
 	MonoDomain * domain = mono_domain_get_by_id (domain_id);
 
 	if (NULL == domain) {
-		MonoException *exc = mono_get_exception_execution_engine ("Failed to unload domain, domain id not found");
+		mono_get_exception_execution_engine ("Failed to unload domain, domain id not found");
 		mono_set_pending_exception (exc);
 		return;
 	}
@@ -2165,7 +2169,9 @@ ves_icall_System_AppDomain_InternalUnload (gint32 domain_id)
 	return;
 #endif
 
-	mono_domain_unload (domain);
+	mono_domain_try_unload (domain, (MonoObject**)&exc);
+	if (exc)
+		mono_set_pending_exception (exc);
 }
 
 gboolean
@@ -2512,8 +2518,6 @@ mono_domain_unload (MonoDomain *domain)
 {
 	MonoObject *exc = NULL;
 	mono_domain_try_unload (domain, &exc);
-	if (exc)
-		mono_raise_exception ((MonoException*)exc);
 }
 
 static guint32

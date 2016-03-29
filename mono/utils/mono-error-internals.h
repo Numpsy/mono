@@ -94,6 +94,15 @@ void
 mono_error_set_generic_error (MonoError *error, const char * name_space, const char *name, const char *msg_format, ...);
 
 void
+mono_error_set_execution_engine (MonoError *error, const char *msg_format, ...);
+
+void
+mono_error_set_not_implemented (MonoError *error, const char *msg_format, ...);
+
+void
+mono_error_set_not_supported (MonoError *error, const char *msg_format, ...);
+
+void
 mono_error_set_exception_instance (MonoError *error, MonoException *exc);
 
 void
@@ -110,5 +119,8 @@ mono_error_raise_exception (MonoError *error);
 
 void
 mono_loader_set_error_from_mono_error (MonoError *oerror);
+
+void
+mono_error_move (MonoError *dest, MonoError *src);
 
 #endif
