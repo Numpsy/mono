@@ -10,18 +10,7 @@
  * Copyright 2011 Xamarin Inc (http://www.xamarin.com)
  * Copyright (C) 2012 Xamarin Inc
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Library General Public
- * License 2.0 as published by the Free Software Foundation;
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Library General Public License for more details.
- *
- * You should have received a copy of the GNU Library General Public
- * License 2.0 along with this library; if not, write to the Free
- * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 #include "config.h"
@@ -190,6 +179,17 @@ sgen_memgov_major_pre_sweep (void)
 }
 
 void
+sgen_memgov_major_post_sweep (void)
+{
+	mword num_major_sections = major_collector.get_num_major_sections ();
+
+	mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_GC, "GC_MAJOR_SWEEP: major %dK/%dK",
+		num_major_sections * major_collector.section_size / 1024,
+		last_major_num_sections * major_collector.section_size / 1024);
+	last_major_num_sections = num_major_sections;
+}
+
+void
 sgen_memgov_major_collection_start (void)
 {
 	need_calculate_minor_collection_allowance = TRUE;
@@ -224,7 +224,7 @@ sgen_memgov_collection_end (int generation, GGTimingInfo* info, int info_count)
 		if (info[i].generation != -1)
 			sgen_client_log_timing (&info [i], last_major_num_sections, last_los_memory_usage);
 	}
-	last_major_num_sections = major_collector.get_num_major_sections ();
+	last_los_memory_usage = los_memory_usage;
 }
 
 /*

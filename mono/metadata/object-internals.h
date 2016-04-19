@@ -201,23 +201,24 @@ typedef struct {
 
 struct _MonoException {
 	MonoObject object;
+	MonoString *class_name;
+	MonoString *message;
+	MonoObject *_data;
+	MonoObject *inner_ex;
+	MonoString *help_link;
 	/* Stores the IPs and the generic sharing infos
 	   (vtable/MRGCTX) of the frames. */
 	MonoArray  *trace_ips;
-	MonoObject *inner_ex;
-	MonoString *message;
-	MonoString *help_link;
-	MonoString *class_name;
 	MonoString *stack_trace;
 	MonoString *remote_stack_trace;
 	gint32	    remote_stack_index;
-	gint32	    hresult;
-	MonoString *source;
-	MonoObject *_data;
-	MonoObject *captured_traces;
-	MonoArray  *native_trace_ips;
 	/* Dynamic methods referenced by the stack trace */
 	MonoObject *dynamic_methods;
+	gint32	    hresult;
+	MonoString *source;
+	MonoObject *serialization_manager;
+	MonoObject *captured_traces;
+	MonoArray  *native_trace_ips;
 };
 
 typedef struct {
@@ -1347,7 +1348,7 @@ void        mono_reflection_create_internal_class (MonoReflectionTypeBuilder *tb
 
 void        mono_reflection_setup_generic_class   (MonoReflectionTypeBuilder *tb);
 
-void        mono_reflection_create_generic_class  (MonoReflectionTypeBuilder *tb);
+gboolean    mono_reflection_create_generic_class  (MonoReflectionTypeBuilder *tb, MonoError *error);
 
 MonoReflectionType* mono_reflection_create_runtime_class  (MonoReflectionTypeBuilder *tb);
 
@@ -1392,7 +1393,7 @@ gboolean
 mono_reflection_is_valid_dynamic_token (MonoDynamicImage *image, guint32 token);
 
 void
-mono_reflection_resolve_custom_attribute_data (MonoReflectionMethod *method, MonoReflectionAssembly *assembly, gpointer data, guint32 data_length, MonoArray **ctor_args, MonoArray ** named_args);
+ves_icall_System_Reflection_CustomAttributeData_ResolveArgumentsInternal (MonoReflectionMethod *method, MonoReflectionAssembly *assembly, gpointer data, guint32 data_length, MonoArray **ctor_args, MonoArray ** named_args);
 
 MonoType*
 mono_reflection_type_get_handle (MonoReflectionType *ref, MonoError *error);

@@ -1,5 +1,6 @@
 /* 
  * Copyright 2012 Xamarin Inc
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #ifndef __MONO_METADATA_CLASS_INTERNALS_H__
 #define __MONO_METADATA_CLASS_INTERNALS_H__
@@ -517,7 +518,6 @@ struct _MonoMethodInflated {
 		MonoMethod method;
 		MonoMethodPInvoke pinvoke;
 	} method;
-	MonoMethodHeader *header;
 	MonoMethod *declaring;		/* the generic method definition. */
 	MonoGenericContext context;	/* The current instantiation */
 	MonoImageSet *owner; /* The image set that the inflated method belongs to. */
@@ -720,16 +720,6 @@ typedef struct {
 	MonoMethod *wrapper_method;
 	gboolean no_raise;
 } MonoJitICallInfo;
-
-typedef struct {
-	guint8 exception_type;
-	char *class_name; /* If kind == TYPE */
-	char *assembly_name; /* If kind == TYPE or ASSEMBLY */
-	MonoClass *klass; /* If kind != TYPE */
-	const char *member_name; /* If kind != TYPE */
-	gboolean ref_only; /* If kind == ASSEMBLY */
-	char *msg; /* If kind == BAD_IMAGE */
-} MonoLoaderError;
 
 void
 mono_class_setup_supertypes (MonoClass *klass);
@@ -1233,32 +1223,6 @@ mono_loader_lock_if_inited (void);
 
 void
 mono_loader_unlock_if_inited (void);
-
-void
-mono_loader_set_error_assembly_load (const char *assembly_name, gboolean ref_only);
-
-void
-mono_loader_set_error_type_load (const char *class_name, const char *assembly_name);
-
-void
-mono_loader_set_error_method_load (const char *class_name, const char *member_name);
-
-void
-mono_loader_set_error_field_load (MonoClass *klass, const char *member_name);
-void
-mono_loader_set_error_bad_image (char *msg);
-
-MonoException *
-mono_loader_error_prepare_exception (MonoLoaderError *error);
-
-MonoLoaderError *
-mono_loader_get_last_error (void);
-
-void
-mono_loader_clear_error    (void);
-
-void
-mono_loader_assert_no_error (void);
 
 void
 mono_reflection_init       (void);
