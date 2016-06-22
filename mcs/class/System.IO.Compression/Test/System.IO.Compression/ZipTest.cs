@@ -239,6 +239,58 @@ namespace MonoTests.System.IO.Compression
 		}
 
 		[Test]
+		public void ZipEnumerateEntriesModifiedTime()
+		{
+			File.Copy("archive.zip", "test.zip", overwrite: true);
+			var date = DateTimeOffset.Now;
+			using (var archive = new ZipArchive(File.Open("test.zip", FileMode.Open),
+				ZipArchiveMode.Update))
+			{
+				var entry = archive.GetEntry("foo.txt");
+				entry.LastWriteTime = date;
+			}
+
+			using (var archive = new ZipArchive(File.Open("test.zip", FileMode.Open),
+				ZipArchiveMode.Read))
+			{
+				var entry = archive.GetEntry("foo.txt");
+				Assert.AreEqual(entry.LastWriteTime.Year, date.Year);
+				Assert.AreEqual(entry.LastWriteTime.Month, date.Month);
+				Assert.AreEqual(entry.LastWriteTime.Day, date.Day);
+
+			}
+
+			File.Delete ("test.zip");
+		}		
+
+		[Test]
+		public void ZipEnumerateArchiveDefaultLastWriteTime()
+		{
+			using (var archive = new ZipArchive(File.Open("test.nupkg", FileMode.Open),
+				ZipArchiveMode.Read))
+			{
+				var entry = archive.GetEntry("_rels/.rels");
+				Assert.AreEqual(new DateTime(624511296000000000).Ticks, entry.LastWriteTime.Ticks);
+				Assert.IsNotNull(entry);
+			}
+		}
+
+		[Test]
+		public void ZipGetArchiveEntryStreamLengthPositionReadMode()
+		{
+			using (var archive = new ZipArchive(File.Open("test.nupkg", FileMode.Open),
+				ZipArchiveMode.Read))
+			{
+				var entry = archive.GetEntry("_rels/.rels");
+				using (var stream = entry.Open())
+				{
+					Assert.AreEqual(0, stream.Position);
+					Assert.AreEqual(425, stream.Length);
+				}
+			}
+		}
+
+		[Test]
 		public void ZipEnumerateEntriesReadMode()
 		{
 			File.Copy("archive.zip", "test.zip", overwrite: true);

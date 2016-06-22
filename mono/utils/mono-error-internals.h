@@ -33,14 +33,19 @@ typedef struct {
 } MonoErrorInternal;
 
 #define error_init(error) do {	\
-	(error)->error_code = MONO_ERROR_NONE;	\
-	(error)->flags = 0;	\
+	((MonoErrorInternal*)(error))->error_code = MONO_ERROR_NONE;	\
+	((MonoErrorInternal*)(error))->flags = 0;	\
 } while (0);
 
 #define is_ok(error) ((error)->error_code == MONO_ERROR_NONE)
 
 #define return_if_nok(error) do { if (!is_ok ((error))) return; } while (0)
 #define return_val_if_nok(error,val) do { if (!is_ok ((error))) return (val); } while (0)
+
+/* Only use this in icalls */
+#define return_val_and_set_pending_if_nok(error,value)	\
+	if (mono_error_set_pending_exception ((error)))	\
+		return (value);
 
 void
 mono_error_assert_ok_pos (MonoError *error, const char* filename, int lineno) MONO_LLVM_INTERNAL;
@@ -107,6 +112,9 @@ mono_error_set_invalid_operation (MonoError *error, const char *msg_format, ...)
 
 void
 mono_error_set_exception_instance (MonoError *error, MonoException *exc);
+
+void
+mono_error_set_invalid_program (MonoError *oerror, const char *msg_format, ...);
 
 MonoException*
 mono_error_prepare_exception (MonoError *error, MonoError *error_out);

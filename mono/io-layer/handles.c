@@ -708,7 +708,8 @@ gpointer _wapi_handle_new_fd (WapiHandleType type, int fd,
 	return(GUINT_TO_POINTER(fd));
 }
 
-gboolean _wapi_lookup_handle (gpointer handle, WapiHandleType type,
+gboolean 
+_wapi_lookup_handle (gpointer handle, WapiHandleType type,
 			      gpointer *handle_specific)
 {
 	struct _WapiHandleUnshared *handle_data;
@@ -984,12 +985,12 @@ void _wapi_handle_ref (gpointer handle)
 	struct _WapiHandleUnshared *handle_data;
 
 	if (!_WAPI_PRIVATE_VALID_SLOT (idx)) {
+		MONO_TRACE (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER, "%s: Attempting to ref invalid private handle %p", __func__, handle);
 		return;
 	}
 	
 	if (_wapi_handle_type (handle) == WAPI_HANDLE_UNUSED) {
-		g_warning ("%s: Attempting to ref unused handle %p", __func__,
-			   handle);
+		MONO_TRACE (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER, "%s: Attempting to ref unused handle %p", __func__, handle);
 		return;
 	}
 

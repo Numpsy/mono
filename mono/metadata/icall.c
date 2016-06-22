@@ -133,7 +133,7 @@ mono_class_init_checked (MonoClass *klass, MonoError *error)
 	mono_error_init (error);
 
 	if (!mono_class_init (klass))
-		mono_error_set_exception_instance (error, mono_class_get_exception_for_failure (klass));
+		mono_error_set_for_class_failure (error, klass);
 }
 
 ICALL_EXPORT MonoObject *
@@ -713,6 +713,15 @@ ves_icall_System_Array_ClearInternal (MonoArray *arr, int idx, int length)
 	mono_gc_bzero_atomic (mono_array_addr_with_size_fast (arr, sz, idx), length * sz);
 }
 
+ICALL_EXPORT MonoArray*
+ves_icall_System_Array_Clone (MonoArray *arr)
+{
+	MonoError error;
+	MonoArray *result = mono_array_clone_checked (arr, &error);
+	mono_error_set_pending_exception (&error);
+	return result;
+}
+
 ICALL_EXPORT gboolean
 ves_icall_System_Array_FastCopy (MonoArray *source, int source_idx, MonoArray* dest, int dest_idx, int length)
 {
@@ -1051,7 +1060,10 @@ ves_icall_System_ValueType_InternalGetHashCode (MonoObject *this_obj, MonoArray 
 
 	if (values) {
 		int i;
-		mono_gc_wbarrier_generic_store (fields, (MonoObject*) mono_array_new (mono_domain_get (), mono_defaults.object_class, count));
+		MonoArray *fields_arr = mono_array_new_checked (mono_domain_get (), mono_defaults.object_class, count, &error);
+		if (mono_error_set_pending_exception (&error))
+			return 0;
+		mono_gc_wbarrier_generic_store (fields, (MonoObject*) fields_arr);
 		for (i = 0; i < count; ++i)
 			mono_array_setref (*fields, i, values [i]);
 	} else {
@@ -1170,7 +1182,10 @@ ves_icall_System_ValueType_Equals (MonoObject *this_obj, MonoObject *that, MonoA
 
 	if (values) {
 		int i;
-		mono_gc_wbarrier_generic_store (fields, (MonoObject*) mono_array_new (mono_domain_get (), mono_defaults.object_class, count));
+		MonoArray *fields_arr = mono_array_new_checked (mono_domain_get (), mono_defaults.object_class, count, &error);
+		if (mono_error_set_pending_exception (&error))
+			return FALSE;
+		mono_gc_wbarrier_generic_store (fields, (MonoObject*) fields_arr);
 		for (i = 0; i < count; ++i)
 			mono_array_setref_fast (*fields, i, values [i]);
 		return FALSE;
@@ -1193,13 +1208,6 @@ ves_icall_System_Object_GetType (MonoObject *obj)
 
 	mono_error_set_pending_exception (&error);
 	return ret;
-}
-
-ICALL_EXPORT void
-ves_icall_MonoType_type_from_obj (MonoReflectionType *mtype, MonoObject *obj)
-{
-	mtype->type = &obj->vtable->klass->byval_arg;
-	g_assert (mtype->type->type);
 }
 
 ICALL_EXPORT gint32
@@ -1462,31 +1470,41 @@ ves_icall_System_Type_internal_from_name (MonoString *name,
 										  MonoBoolean ignoreCase)
 {
 	MonoError error;
-	char *str = mono_string_to_utf8 (name);
 	MonoTypeNameParse info;
-	MonoReflectionType *type;
+	MonoReflectionType *type = NULL;
 	gboolean parsedOk;
+
+	char *str = mono_string_to_utf8_checked (name, &error);
+	if (!is_ok (&error))
+		goto leave;
 
 	parsedOk = mono_reflection_parse_type (str, &info);
 
 	/* mono_reflection_parse_type() mangles the string */
 	if (!parsedOk) {
 		mono_reflection_free_type_info (&info);
-		if (throwOnError) {
-			mono_error_init (&error);
+		if (throwOnError)
 			mono_error_set_argument (&error, "typeName", "failed parse: %s", str);
-			mono_error_set_pending_exception (&error);
-		}
-		g_free (str);
-		return NULL;
+		goto leave;
 	}
 
 	type = type_from_parsed_name (&info, ignoreCase, &error);
 
 	mono_reflection_free_type_info (&info);
-	g_free (str);
 
-	if (!mono_error_ok (&error)) {
+	if (!is_ok (&error))
+		goto leave;
+
+	if (type == NULL){
+		if (throwOnError) {
+			mono_error_set_type_load_name (&error, g_strdup (str), NULL, "");
+			goto leave;
+		}
+	}
+	
+leave:
+	g_free (str);
+	if (!is_ok (&error)) {
 		if (throwOnError)
 			mono_error_set_pending_exception (&error);
 		else
@@ -1494,18 +1512,6 @@ ves_icall_System_Type_internal_from_name (MonoString *name,
 		return NULL;
 	}
 
-	if (type == NULL){
-		MonoException *e = NULL;
-		
-		if (throwOnError)
-			e = mono_get_exception_type_load (name, NULL);
-
-		if (e) {
-			mono_set_pending_exception (e);
-			return NULL;
-		}
-	}
-	
 	return type;
 }
 
@@ -2137,12 +2143,16 @@ ves_icall_MonoField_GetRawConstantValue (MonoReflectionField *rfield)
 			return NULL;
 		}
 		v = ((gchar *) o) + sizeof (MonoObject);
-		mono_get_constant_value_from_blob (domain, def_type, def_value, v);
+		mono_get_constant_value_from_blob (domain, def_type, def_value, v, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
 		break;
 	}
 	case MONO_TYPE_STRING:
 	case MONO_TYPE_CLASS:
-		mono_get_constant_value_from_blob (domain, def_type, def_value, &o);
+		mono_get_constant_value_from_blob (domain, def_type, def_value, &o, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
 		break;
 	default:
 		g_assert_not_reached ();
@@ -2303,7 +2313,10 @@ ves_icall_MonoEventInfo_get_event_info (MonoReflectionMonoEvent *event, MonoEven
 		int i, n = 0;
 		while (event->event->other [n])
 			n++;
-		MONO_STRUCT_SETREF (info, other_methods, mono_array_new (domain, mono_defaults.method_info_class, n));
+		MonoArray *info_arr = mono_array_new_checked (domain, mono_defaults.method_info_class, n, &error);
+		if (mono_error_set_pending_exception (&error))
+			return;
+		MONO_STRUCT_SETREF (info, other_methods, info_arr);
 
 		for (i = 0; i < n; i++) {
 			rm = mono_method_get_object_checked (domain, event->event->other [i], NULL, &error);
@@ -2379,7 +2392,7 @@ get_interfaces_hash (gconstpointer v1)
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetInterfaces (MonoReflectionType* type)
+ves_icall_RuntimeType_GetInterfaces (MonoReflectionType* type)
 {
 	MonoError error;
 	MonoClass *klass = mono_class_from_mono_type (type->type);
@@ -2409,12 +2422,17 @@ ves_icall_Type_GetInterfaces (MonoReflectionType* type)
 	len = g_hash_table_size (iface_hash);
 	if (len == 0) {
 		g_hash_table_destroy (iface_hash);
-		if (!data.domain->empty_types)
-			data.domain->empty_types = mono_array_new_cached (data.domain, mono_defaults.monotype_class, 0);
+		if (!data.domain->empty_types) {
+			data.domain->empty_types = mono_array_new_cached (data.domain, mono_defaults.runtimetype_class, 0, &error);
+			if (!is_ok (&error))
+				goto fail;
+		}
 		return data.domain->empty_types;
 	}
 
-	data.iface_array = mono_array_new_cached (data.domain, mono_defaults.monotype_class, len);
+	data.iface_array = mono_array_new_cached (data.domain, mono_defaults.runtimetype_class, len, &error);
+	if (!is_ok (&error))
+		goto fail;
 	g_hash_table_foreach (iface_hash, fill_iface_array, &data);
 	if (!mono_error_ok (&error))
 		goto fail;
@@ -2429,7 +2447,7 @@ fail:
 }
 
 ICALL_EXPORT void
-ves_icall_Type_GetInterfaceMapData (MonoReflectionType *type, MonoReflectionType *iface, MonoArray **targets, MonoArray **methods)
+ves_icall_RuntimeType_GetInterfaceMapData (MonoReflectionType *type, MonoReflectionType *iface, MonoArray **targets, MonoArray **methods)
 {
 	gboolean variance_used;
 	MonoClass *klass = mono_class_from_mono_type (type->type);
@@ -2456,8 +2474,14 @@ ves_icall_Type_GetInterfaceMapData (MonoReflectionType *type, MonoReflectionType
 
 	len = mono_class_num_methods (iclass);
 	domain = mono_object_domain (type);
-	mono_gc_wbarrier_generic_store (targets, (MonoObject*) mono_array_new (domain, mono_defaults.method_info_class, len));
-	mono_gc_wbarrier_generic_store (methods, (MonoObject*) mono_array_new (domain, mono_defaults.method_info_class, len));
+	MonoArray *targets_arr = mono_array_new_checked (domain, mono_defaults.method_info_class, len, &error);
+	if (mono_error_set_pending_exception (&error))
+		return;
+	mono_gc_wbarrier_generic_store (targets, (MonoObject*) targets_arr);
+	MonoArray *methods_arr = mono_array_new_checked (domain, mono_defaults.method_info_class, len, &error);
+	if (mono_error_set_pending_exception (&error))
+		return;
+	mono_gc_wbarrier_generic_store (methods, (MonoObject*) methods_arr);
 	iter = NULL;
 	while ((method = mono_class_get_methods (iclass, &iter))) {
 		member = mono_method_get_object_checked (domain, method, iclass, &error);
@@ -2474,7 +2498,7 @@ ves_icall_Type_GetInterfaceMapData (MonoReflectionType *type, MonoReflectionType
 }
 
 ICALL_EXPORT void
-ves_icall_Type_GetPacking (MonoReflectionType *type, guint32 *packing, guint32 *size)
+ves_icall_RuntimeType_GetPacking (MonoReflectionType *type, guint32 *packing, guint32 *size)
 {
 	MonoError error;
 	MonoClass *klass = mono_class_from_mono_type (type->type);
@@ -2608,7 +2632,7 @@ ves_icall_RuntimeTypeHandle_GetAssembly (MonoReflectionType *type)
 }
 
 ICALL_EXPORT MonoReflectionType*
-ves_icall_MonoType_get_DeclaringType (MonoReflectionType *type)
+ves_icall_RuntimeType_get_DeclaringType (MonoReflectionType *type)
 {
 	MonoError error;
 	MonoReflectionType *ret;
@@ -2637,7 +2661,7 @@ ves_icall_MonoType_get_DeclaringType (MonoReflectionType *type)
 }
 
 ICALL_EXPORT MonoString*
-ves_icall_MonoType_get_Name (MonoReflectionType *type)
+ves_icall_RuntimeType_get_Name (MonoReflectionType *type)
 {
 	MonoDomain *domain = mono_domain_get (); 
 	MonoClass *klass = mono_class_from_mono_type (type->type);
@@ -2655,7 +2679,7 @@ ves_icall_MonoType_get_Name (MonoReflectionType *type)
 }
 
 ICALL_EXPORT MonoString*
-ves_icall_MonoType_get_Namespace (MonoReflectionType *type)
+ves_icall_RuntimeType_get_Namespace (MonoReflectionType *type)
 {
 	MonoDomain *domain = mono_domain_get (); 
 	MonoClass *klass = mono_class_from_mono_type (type->type);
@@ -2685,15 +2709,13 @@ ves_icall_RuntimeTypeHandle_GetArrayRank (MonoReflectionType *type)
 }
 
 static MonoArray*
-create_type_array (MonoDomain *domain, MonoBoolean runtimeTypeArray, int count)
+create_type_array (MonoDomain *domain, MonoBoolean runtimeTypeArray, int count, MonoError *error)
 {
-	MonoArray *res;
-	res = mono_array_new (domain, runtimeTypeArray ? mono_defaults.runtimetype_class : mono_defaults.systemtype_class, count);
-	return res;
+	return mono_array_new_checked (domain, runtimeTypeArray ? mono_defaults.runtimetype_class : mono_defaults.systemtype_class, count, error);
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_MonoType_GetGenericArguments (MonoReflectionType *type, MonoBoolean runtimeTypeArray)
+ves_icall_RuntimeType_GetGenericArguments (MonoReflectionType *type, MonoBoolean runtimeTypeArray)
 {
 	MonoError error;
 	MonoReflectionType *rt;
@@ -2706,7 +2728,9 @@ ves_icall_MonoType_GetGenericArguments (MonoReflectionType *type, MonoBoolean ru
 
 	if (klass->generic_container) {
 		MonoGenericContainer *container = klass->generic_container;
-		res = create_type_array (domain, runtimeTypeArray, container->type_argc);
+		res = create_type_array (domain, runtimeTypeArray, container->type_argc, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
 		for (i = 0; i < container->type_argc; ++i) {
 			pklass = mono_class_from_generic_parameter_internal (mono_generic_container_get_param (container, i));
 
@@ -2718,7 +2742,9 @@ ves_icall_MonoType_GetGenericArguments (MonoReflectionType *type, MonoBoolean ru
 		}
 	} else if (klass->generic_class) {
 		MonoGenericInst *inst = klass->generic_class->context.class_inst;
-		res = create_type_array (domain, runtimeTypeArray, inst->type_argc);
+		res = create_type_array (domain, runtimeTypeArray, inst->type_argc, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
 		for (i = 0; i < inst->type_argc; ++i) {
 			rt = mono_type_get_object_checked (domain, inst->type_argv [i], &error);
 			if (mono_error_set_pending_exception (&error))
@@ -2781,7 +2807,7 @@ ves_icall_RuntimeTypeHandle_GetGenericTypeDefinition_impl (MonoReflectionType *t
 }
 
 ICALL_EXPORT MonoReflectionType*
-ves_icall_Type_MakeGenericType (MonoReflectionType *type, MonoArray *type_array)
+ves_icall_RuntimeType_MakeGenericType (MonoReflectionType *type, MonoArray *type_array)
 {
 	MonoError error;
 	MonoReflectionType *ret;
@@ -2839,7 +2865,7 @@ ves_icall_RuntimeTypeHandle_HasInstantiation (MonoReflectionType *type)
 }
 
 ICALL_EXPORT gint32
-ves_icall_Type_GetGenericParameterPosition (MonoReflectionType *type)
+ves_icall_RuntimeType_GetGenericParameterPosition (MonoReflectionType *type)
 {
 	if (!IS_MONOTYPE (type))
 		return -1;
@@ -2850,7 +2876,7 @@ ves_icall_Type_GetGenericParameterPosition (MonoReflectionType *type)
 }
 
 ICALL_EXPORT GenericParameterAttributes
-ves_icall_Type_GetGenericParameterAttributes (MonoReflectionType *type)
+ves_icall_RuntimeType_GetGenericParameterAttributes (MonoReflectionType *type)
 {
 	g_assert (IS_MONOTYPE (type));
 	g_assert (is_generic_parameter (type->type));
@@ -2858,7 +2884,7 @@ ves_icall_Type_GetGenericParameterAttributes (MonoReflectionType *type)
 }
 
 ICALL_EXPORT MonoArray *
-ves_icall_Type_GetGenericParameterConstraints (MonoReflectionType *type)
+ves_icall_RuntimeType_GetGenericParameterConstraints (MonoReflectionType *type)
 {
 	MonoError error;
 	MonoReflectionType *rt;
@@ -2875,7 +2901,9 @@ ves_icall_Type_GetGenericParameterConstraints (MonoReflectionType *type)
 	for (count = 0, ptr = param_info->constraints; ptr && *ptr; ptr++, count++)
 		;
 
-	res = mono_array_new (domain, mono_defaults.monotype_class, count);
+	res = mono_array_new_checked (domain, mono_defaults.runtimetype_class, count, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	for (i = 0; i < count; i++) {
 		rt = mono_type_get_object_checked (domain, &param_info->constraints [i]->byval_arg, &error);
 		if (mono_error_set_pending_exception (&error))
@@ -2908,7 +2936,7 @@ ves_icall_EnumBuilder_setup_enum_type (MonoReflectionType *enumtype,
 }
 
 ICALL_EXPORT MonoReflectionMethod*
-ves_icall_MonoType_GetCorrespondingInflatedMethod (MonoReflectionType *type, 
+ves_icall_RuntimeType_GetCorrespondingInflatedMethod (MonoReflectionType *type, 
                                                    MonoReflectionMethod* generic)
 {
 	MonoDomain *domain; 
@@ -2938,7 +2966,7 @@ ves_icall_MonoType_GetCorrespondingInflatedMethod (MonoReflectionType *type,
 }
 
 ICALL_EXPORT MonoReflectionMethod *
-ves_icall_MonoType_get_DeclaringMethod (MonoReflectionType *ref_type)
+ves_icall_RuntimeType_get_DeclaringMethod (MonoReflectionType *ref_type)
 {
 	MonoMethod *method;
 	MonoType *type = ref_type->type;
@@ -3100,7 +3128,9 @@ ves_icall_MonoMethod_GetGenericArguments (MonoReflectionMethod *method)
 
 		if (inst) {
 			count = inst->type_argc;
-			res = mono_array_new (domain, mono_defaults.systemtype_class, count);
+			res = mono_array_new_checked (domain, mono_defaults.systemtype_class, count, &error);
+			if (mono_error_set_pending_exception (&error))
+				return NULL;
 
 			for (i = 0; i < count; i++) {
 				rt = mono_type_get_object_checked (domain, inst->type_argv [i], &error);
@@ -3115,7 +3145,9 @@ ves_icall_MonoMethod_GetGenericArguments (MonoReflectionMethod *method)
 	}
 
 	count = mono_method_signature (method->method)->generic_param_count;
-	res = mono_array_new (domain, mono_defaults.systemtype_class, count);
+	res = mono_array_new_checked (domain, mono_defaults.systemtype_class, count, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	for (i = 0; i < count; i++) {
 		MonoGenericContainer *container = mono_method_get_generic_container (method->method);
@@ -3272,7 +3304,9 @@ ves_icall_InternalInvoke (MonoReflectionMethod *method, MonoObject *this_arg, Mo
 			return (MonoObject*)arr;
 		}
 	}
-	return mono_runtime_invoke_array (m, obj, params, NULL);
+	MonoObject *result = mono_runtime_invoke_array_checked (m, obj, params, &error);
+	mono_error_set_pending_exception (&error);
+	return result;
 }
 
 #ifndef DISABLE_REMOTING
@@ -3302,23 +3336,27 @@ ves_icall_InternalExecute (MonoReflectionMethod *method, MonoObject *this_arg, M
 			}
 			
 			name = mono_array_get (params, MonoString *, 1);
-			str = mono_string_to_utf8 (name);
+			str = mono_string_to_utf8_checked (name, &error);
+			if (mono_error_set_pending_exception (&error))
+				return NULL;
 		
 			do {
 				MonoClassField* field = mono_class_get_field_from_name (k, str);
 				if (field) {
+					g_free (str);
 					MonoClass *field_klass =  mono_class_from_mono_type (field->type);
 					if (field_klass->valuetype) {
 						result = mono_value_box_checked (domain, field_klass, (char *)this_arg + field->offset, &error);
-						mono_error_set_pending_exception (&error);
-						/* fallthru to cleanup */
+						if (mono_error_set_pending_exception (&error))
+							return NULL;
 					} else 
 						result = (MonoObject *)*((gpointer *)((char *)this_arg + field->offset));
 				
-					out_args = mono_array_new (domain, mono_defaults.object_class, 1);
+					out_args = mono_array_new_checked (domain, mono_defaults.object_class, 1, &error);
+					if (mono_error_set_pending_exception (&error))
+						return NULL;
 					mono_gc_wbarrier_generic_store (outArgs, (MonoObject*) out_args);
 					mono_array_setref (out_args, 0, result);
-					g_free (str);
 					return NULL;
 				}
 				k = k->parent;
@@ -3343,11 +3381,14 @@ ves_icall_InternalExecute (MonoReflectionMethod *method, MonoObject *this_arg, M
 			}
 			
 			name = mono_array_get (params, MonoString *, 1);
-			str = mono_string_to_utf8 (name);
+			str = mono_string_to_utf8_checked (name, &error);
+			if (mono_error_set_pending_exception (&error))
+				return NULL;
 		
 			do {
 				MonoClassField* field = mono_class_get_field_from_name (k, str);
 				if (field) {
+					g_free (str);
 					MonoClass *field_klass =  mono_class_from_mono_type (field->type);
 					MonoObject *val = (MonoObject *)mono_array_get (params, gpointer, 2);
 
@@ -3359,10 +3400,11 @@ ves_icall_InternalExecute (MonoReflectionMethod *method, MonoObject *this_arg, M
 						mono_gc_wbarrier_set_field (this_arg, (char*)this_arg + field->offset, val);
 					}
 				
-					out_args = mono_array_new (domain, mono_defaults.object_class, 0);
+					out_args = mono_array_new_checked (domain, mono_defaults.object_class, 0, &error);
+					if (mono_error_set_pending_exception (&error))
+						return NULL;
 					mono_gc_wbarrier_generic_store (outArgs, (MonoObject*) out_args);
 
-					g_free (str);
 					return NULL;
 				}
 				
@@ -3380,15 +3422,19 @@ ves_icall_InternalExecute (MonoReflectionMethod *method, MonoObject *this_arg, M
 			outarg_count++;
 	}
 
-	out_args = mono_array_new (domain, mono_defaults.object_class, outarg_count);
-	
+	out_args = mono_array_new_checked (domain, mono_defaults.object_class, outarg_count, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
+
 	/* handle constructors only for objects already allocated */
 	if (!strcmp (method->method->name, ".ctor"))
 		g_assert (this_arg);
 
 	/* This can be called only on MBR objects, so no need to unbox for valuetypes. */
 	g_assert (!method->method->klass->valuetype);
-	result = mono_runtime_invoke_array (method->method, this_arg, params, NULL);
+	result = mono_runtime_invoke_array_checked (method->method, this_arg, params, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	for (i = 0, j = 0; i < mono_array_length (params); i++) {
 		if (sig->params [i]->byref) {
@@ -3443,7 +3489,8 @@ write_enum_value (char *mem, int type, guint64 value)
 		break;
 	}
 	case MONO_TYPE_U2:
-	case MONO_TYPE_I2: {
+	case MONO_TYPE_I2:
+	case MONO_TYPE_CHAR: {
 		guint16 *p = (guint16 *)mem;
 		*p = value;
 		break;
@@ -3668,8 +3715,12 @@ ves_icall_System_Enum_GetEnumValuesAndNames (MonoReflectionType *type, MonoArray
 	base_type = mono_class_enum_basetype (enumc)->type;
 
 	nvalues = mono_class_num_fields (enumc) ? mono_class_num_fields (enumc) - 1 : 0;
-	*names = mono_array_new (domain, mono_defaults.string_class, nvalues);
-	*values = mono_array_new (domain, mono_defaults.uint64_class, nvalues);
+	*names = mono_array_new_checked (domain, mono_defaults.string_class, nvalues, &error);
+	if (mono_error_set_pending_exception (&error))
+		return FALSE;
+	*values = mono_array_new_checked (domain, mono_defaults.uint64_class, nvalues, &error);
+	if (mono_error_set_pending_exception (&error))
+		return FALSE;
 
 	iter = NULL;
 	while ((field = mono_class_get_fields (enumc, &iter))) {
@@ -3720,7 +3771,7 @@ enum {
 };
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetFields_internal (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoReflectionType *reftype)
+ves_icall_RuntimeType_GetFields_internal (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoReflectionType *reftype)
 {
 	MonoError error;
 	MonoDomain *domain; 
@@ -3735,8 +3786,11 @@ ves_icall_Type_GetFields_internal (MonoReflectionType *type, MonoString *name, g
 	MonoPtrArray tmp_array;
 
 	domain = ((MonoObject *)type)->vtable->domain;
-	if (type->type->byref)
-		return mono_array_new (domain, mono_defaults.field_info_class, 0);
+	if (type->type->byref) {
+		MonoArray *result = mono_array_new_checked (domain, mono_defaults.field_info_class, 0, &error);
+		mono_error_set_pending_exception (&error);
+		return result;
+	}
 
 	klass = startklass = mono_class_from_mono_type (type->type);
 	refklass = mono_class_from_mono_type (reftype->type);
@@ -3781,7 +3835,9 @@ handle_parent:
 
 		if (name != NULL) {
 			if (utf8_name == NULL) {
-				utf8_name = mono_string_to_utf8 (name);
+				utf8_name = mono_string_to_utf8_checked (name, &error);
+				if (!is_ok (&error))
+					goto fail;
 				compare_func = (bflags & BFLAGS_IgnoreCase) ? mono_utf8_strcasecmp : strcmp;
 			}
 
@@ -3797,7 +3853,9 @@ handle_parent:
 	if (!(bflags & BFLAGS_DeclaredOnly) && (klass = klass->parent))
 		goto handle_parent;
 
-	res = mono_array_new_cached (domain, mono_defaults.field_info_class, mono_ptr_array_size (tmp_array));
+	res = mono_array_new_cached (domain, mono_defaults.field_info_class, mono_ptr_array_size (tmp_array), &error);
+	if (!is_ok (&error))
+		goto fail;
 
 	for (i = 0; i < mono_ptr_array_size (tmp_array); ++i)
 		mono_array_setref (res, i, mono_ptr_array_get (tmp_array, i));
@@ -3942,7 +4000,7 @@ loader_error:
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetMethodsByName (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoBoolean ignore_case, MonoReflectionType *reftype)
+ves_icall_RuntimeType_GetMethodsByName (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoBoolean ignore_case, MonoReflectionType *reftype)
 {
 	static MonoClass *MethodInfo_array;
 	MonoError error;
@@ -3978,8 +4036,11 @@ ves_icall_Type_GetMethodsByName (MonoReflectionType *type, MonoString *name, gui
 		return res;
 	}
 
-	if (name)
-		mname = mono_string_to_utf8 (name);
+	if (name) {
+		mname = mono_string_to_utf8_checked (name, &error);
+		if (mono_error_set_pending_exception (&error))
+		    return NULL;
+	}
 
 	method_array = mono_class_get_methods_by_name (klass, mname, bflags, ignore_case, FALSE, &ex);
 	g_free ((char*)mname);
@@ -4010,11 +4071,11 @@ failure:
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetConstructors_internal (MonoReflectionType *type, guint32 bflags, MonoReflectionType *reftype)
+ves_icall_RuntimeType_GetConstructors_internal (MonoReflectionType *type, guint32 bflags, MonoReflectionType *reftype)
 {
 	MonoDomain *domain; 
 	MonoClass *startklass, *klass, *refklass;
-	MonoArray *res;
+	MonoArray *res = NULL;
 	MonoMethod *method;
 	MonoObject *member;
 	int i, match;
@@ -4022,18 +4083,23 @@ ves_icall_Type_GetConstructors_internal (MonoReflectionType *type, guint32 bflag
 	MonoPtrArray tmp_array;
 	MonoError error;
 	
+	domain = ((MonoObject *)type)->vtable->domain;
+	if (type->type->byref) {
+		res = mono_array_new_cached (domain, mono_defaults.method_info_class, 0, &error);
+		mono_error_set_pending_exception (&error);
+		return res;
+	}
+
 	mono_ptr_array_init (tmp_array, 4, MONO_ROOT_SOURCE_REFLECTION, "temporary reflection constructors list"); /*FIXME, guestimating*/
 
-	domain = ((MonoObject *)type)->vtable->domain;
-	if (type->type->byref)
-		return mono_array_new_cached (domain, mono_defaults.method_info_class, 0);
+
 	klass = startklass = mono_class_from_mono_type (type->type);
 	refklass = mono_class_from_mono_type (reftype->type);
 
 	mono_class_setup_methods (klass);
 	if (mono_class_has_failure (klass)) {
 		mono_set_pending_exception (mono_class_get_exception_for_failure (klass));
-		return NULL;
+		goto leave;
 	}
 
 	iter = NULL;
@@ -4063,19 +4129,20 @@ ves_icall_Type_GetConstructors_internal (MonoReflectionType *type, guint32 bflag
 		if (!match)
 			continue;
 		member = (MonoObject*)mono_method_get_object_checked (domain, method, refklass, &error);
-		if (!mono_error_ok (&error)) {
-			mono_error_set_pending_exception (&error);
-			return NULL;
-		}
+		if (mono_error_set_pending_exception (&error))
+			goto leave;
 
 		mono_ptr_array_append (tmp_array, member);
 	}
 
-	res = mono_array_new_cached (domain, mono_class_get_constructor_info_class (), mono_ptr_array_size (tmp_array));
+	res = mono_array_new_cached (domain, mono_class_get_constructor_info_class (), mono_ptr_array_size (tmp_array), &error);
+	if (mono_error_set_pending_exception (&error))
+		goto leave;
 
 	for (i = 0; i < mono_ptr_array_size (tmp_array); ++i)
 		mono_array_setref (res, i, mono_ptr_array_get (tmp_array, i));
 
+leave:
 	mono_ptr_array_destroy (tmp_array);
 
 	return res;
@@ -4090,12 +4157,17 @@ property_hash (gconstpointer data)
 }
 
 static gboolean
-method_declaring_signatures_equal (MonoMethod *method1, MonoMethod *method2)
+property_accessor_override (MonoMethod *method1, MonoMethod *method2)
 {
-	if (method1->is_inflated)
-		method1 = ((MonoMethodInflated*) method1)->declaring;
-	if (method2->is_inflated)
-		method2 = ((MonoMethodInflated*) method2)->declaring;
+	if (method1->slot != -1 && method1->slot == method2->slot)
+		return TRUE;
+
+	if (mono_class_get_generic_type_definition (method1->klass) == mono_class_get_generic_type_definition (method2->klass)) {
+		if (method1->is_inflated)
+			method1 = ((MonoMethodInflated*) method1)->declaring;
+		if (method2->is_inflated)
+			method2 = ((MonoMethodInflated*) method2)->declaring;
+	}
 
 	return mono_metadata_signature_equal (mono_method_signature (method1), mono_method_signature (method2));
 }
@@ -4121,10 +4193,10 @@ property_equal (MonoProperty *prop1, MonoProperty *prop2)
 	   the indexer came from method 1 or from method 2, and we
 	   shouldn't conflate them.   (Bugzilla 36283)
 	*/
-	if (prop1->get && prop2->get && !method_declaring_signatures_equal (prop1->get, prop2->get))
+	if (prop1->get && prop2->get && !property_accessor_override (prop1->get, prop2->get))
 		return FALSE;
 
-	if (prop1->set && prop2->set && !method_declaring_signatures_equal (prop1->set, prop2->set))
+	if (prop1->set && prop2->set && !property_accessor_override (prop1->set, prop2->set))
 		return FALSE;
 
 	return TRUE;
@@ -4140,7 +4212,7 @@ property_accessor_nonpublic (MonoMethod* accessor, gboolean start_klass)
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetPropertiesByName (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoBoolean ignore_case, MonoReflectionType *reftype)
+ves_icall_RuntimeType_GetPropertiesByName (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoBoolean ignore_case, MonoReflectionType *reftype)
 {
 	MonoError error;
 	MonoDomain *domain; 
@@ -4158,15 +4230,21 @@ ves_icall_Type_GetPropertiesByName (MonoReflectionType *type, MonoString *name, 
 
 	mono_error_init (&error);
 	
+	domain = ((MonoObject *)type)->vtable->domain;
+	if (type->type->byref) {
+		res = mono_array_new_cached (domain, mono_class_get_property_info_class (), 0, &error);
+		mono_error_set_pending_exception (&error);
+		return res;
+	}
+
 	mono_ptr_array_init (tmp_array, 8, MONO_ROOT_SOURCE_REFLECTION, "temporary reflection properties list"); /*This the average for ASP.NET types*/
 
-	domain = ((MonoObject *)type)->vtable->domain;
-	if (type->type->byref)
-		return mono_array_new_cached (domain, mono_class_get_property_info_class (), 0);
 	klass = startklass = mono_class_from_mono_type (type->type);
 
 	if (name != NULL) {
-		propname = mono_string_to_utf8 (name);
+		propname = mono_string_to_utf8_checked (name, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
 		compare_func = (ignore_case) ? mono_utf8_strcasecmp : strcmp;
 	}
 
@@ -4234,7 +4312,9 @@ handle_parent:
 	g_hash_table_destroy (properties);
 	g_free (propname);
 
-	res = mono_array_new_cached (domain, mono_class_get_property_info_class (), mono_ptr_array_size (tmp_array));
+	res = mono_array_new_cached (domain, mono_class_get_property_info_class (), mono_ptr_array_size (tmp_array), &error);
+	if (!is_ok (&error))
+		goto failure;
 	for (i = 0; i < mono_ptr_array_size (tmp_array); ++i)
 		mono_array_setref (res, i, mono_ptr_array_get (tmp_array, i));
 
@@ -4245,9 +4325,8 @@ handle_parent:
 
 
 loader_error:
-	if (mono_class_has_failure (klass)) {
-		mono_error_set_exception_instance (&error, mono_class_get_exception_for_failure (klass));
-	}
+	if (mono_class_has_failure (klass))
+		mono_error_set_for_class_failure (&error, klass);
 
 failure:
 	if (properties)
@@ -4277,7 +4356,7 @@ event_equal (MonoEvent *event1, MonoEvent *event2)
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetEvents_internal (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoReflectionType *reftype)
+ves_icall_RuntimeType_GetEvents_internal (MonoReflectionType *type, MonoString *name, guint32 bflags, MonoReflectionType *reftype)
 {
 	MonoError error;
 	MonoDomain *domain; 
@@ -4294,11 +4373,15 @@ ves_icall_Type_GetEvents_internal (MonoReflectionType *type, MonoString *name, g
 
 	mono_error_init (&error);
 	
+	domain = mono_object_domain (type);
+	if (type->type->byref) {
+		res = mono_array_new_cached (domain, mono_class_get_event_info_class (), 0, &error);
+		mono_error_set_pending_exception (&error);
+		return res;
+	}
+
 	mono_ptr_array_init (tmp_array, 4, MONO_ROOT_SOURCE_REFLECTION, "temporary reflection events list");
 
-	domain = mono_object_domain (type);
-	if (type->type->byref)
-		return mono_array_new_cached (domain, mono_class_get_event_info_class (), 0);
 	klass = startklass = mono_class_from_mono_type (type->type);
 
 	events = g_hash_table_new (event_hash, (GEqualFunc)event_equal);
@@ -4349,7 +4432,9 @@ handle_parent:
 
 		if (name != NULL) {
 			if (utf8_name == NULL) {
-				utf8_name = mono_string_to_utf8 (name);
+				utf8_name = mono_string_to_utf8_checked (name, &error);
+				if (!is_ok (&error))
+					goto failure;
 				compare_func = (bflags & BFLAGS_IgnoreCase) ? mono_utf8_strcasecmp : strcmp;
 			}
 
@@ -4373,7 +4458,9 @@ handle_parent:
 
 	g_hash_table_destroy (events);
 
-	res = mono_array_new_cached (domain, mono_class_get_event_info_class (), mono_ptr_array_size (tmp_array));
+	res = mono_array_new_cached (domain, mono_class_get_event_info_class (), mono_ptr_array_size (tmp_array), &error);
+	if (!is_ok (&error))
+		goto failure;
 
 	for (i = 0; i < mono_ptr_array_size (tmp_array); ++i)
 		mono_array_setref (res, i, mono_ptr_array_get (tmp_array, i));
@@ -4386,9 +4473,8 @@ handle_parent:
 	return res;
 
 loader_error:
-	if (mono_class_has_failure (klass)) {
-		mono_error_set_exception_instance (&error, mono_class_get_exception_for_failure (klass));
-	}
+	if (mono_class_has_failure (klass))
+		mono_error_set_for_class_failure (&error, klass);
 
 failure:
 	
@@ -4404,7 +4490,7 @@ failure:
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_Type_GetNestedTypes (MonoReflectionType *type, MonoString *name, guint32 bflags)
+ves_icall_RuntimeType_GetNestedTypes (MonoReflectionType *type, MonoString *name, guint32 bflags)
 {
 	MonoError error;
 	MonoReflectionType *rt;
@@ -4420,8 +4506,11 @@ ves_icall_Type_GetNestedTypes (MonoReflectionType *type, MonoString *name, guint
 	mono_error_init (&error);
 
 	domain = ((MonoObject *)type)->vtable->domain;
-	if (type->type->byref)
-		return mono_array_new (domain, mono_defaults.monotype_class, 0);
+	if (type->type->byref) {
+		MonoArray *result = mono_array_new_cached (domain, mono_defaults.runtimetype_class, 0, &error);
+		mono_error_set_pending_exception (&error);
+		return result;
+	}
 	klass = mono_class_from_mono_type (type->type);
 
 	/*
@@ -4452,7 +4541,9 @@ ves_icall_Type_GetNestedTypes (MonoReflectionType *type, MonoString *name, guint
 
 		if (name != NULL) {
 			if (str == NULL) {
-				str = mono_string_to_utf8 (name);
+				str = mono_string_to_utf8_checked (name, &error);
+				if (!is_ok (&error))
+					goto leave;
 				mono_identifier_unescape_type_name_chars (str);
 			}
 
@@ -4467,7 +4558,9 @@ ves_icall_Type_GetNestedTypes (MonoReflectionType *type, MonoString *name, guint
 		mono_ptr_array_append (tmp_array, (MonoObject*) rt);
 	}
 
-	res = mono_array_new_cached (domain, mono_defaults.monotype_class, mono_ptr_array_size (tmp_array));
+	res = mono_array_new_cached (domain, mono_defaults.runtimetype_class, mono_ptr_array_size (tmp_array), &error);
+	if (!is_ok (&error))
+		goto leave;
 
 	for (i = 0; i < mono_ptr_array_size (tmp_array); ++i)
 		mono_array_setref (res, i, mono_ptr_array_get (tmp_array, i));
@@ -4493,7 +4586,9 @@ ves_icall_System_Reflection_Assembly_InternalGetType (MonoReflectionAssembly *as
 
 	/* On MS.NET, this does not fire a TypeResolve event */
 	type_resolve = TRUE;
-	str = mono_string_to_utf8 (name);
+	str = mono_string_to_utf8_checked (name, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	/*g_print ("requested type %s in %s\n", str, assembly->assembly->aname.name);*/
 	if (!mono_reflection_parse_type (str, &info)) {
 		g_free (str);
@@ -4706,7 +4801,9 @@ ves_icall_System_Reflection_Assembly_load_with_partial_name (MonoString *mname, 
 	MonoImageOpenStatus status;
 	MonoReflectionAssembly* result = NULL;
 	
-	name = mono_string_to_utf8 (mname);
+	name = mono_string_to_utf8_checked (mname, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	res = mono_assembly_load_with_partial_name (name, &status);
 
 	g_free (name);
@@ -4781,8 +4878,11 @@ ves_icall_System_Reflection_Assembly_GetManifestModuleInternal (MonoReflectionAs
 ICALL_EXPORT MonoArray*
 ves_icall_System_Reflection_Assembly_GetManifestResourceNames (MonoReflectionAssembly *assembly) 
 {
+	MonoError error;
 	MonoTableInfo *table = &assembly->assembly->image->tables [MONO_TABLE_MANIFESTRESOURCE];
-	MonoArray *result = mono_array_new (mono_object_domain (assembly), mono_defaults.string_class, table->rows);
+	MonoArray *result = mono_array_new_checked (mono_object_domain (assembly), mono_defaults.string_class, table->rows, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	int i;
 	const char *val;
 
@@ -4838,7 +4938,10 @@ ves_icall_System_Reflection_Assembly_GetReferencedAssemblies (MonoReflectionAsse
 	t = &assembly->assembly->image->tables [MONO_TABLE_ASSEMBLYREF];
 	count = t->rows;
 
-	result = mono_array_new (domain, mono_class_get_assembly_name_class (), count);
+	result = mono_array_new_checked (domain, mono_class_get_assembly_name_class (), count, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
+
 
 	if (count > 0 && !create_culture) {
 		MonoMethodDesc *desc = mono_method_desc_new (
@@ -4896,14 +4999,26 @@ ves_icall_System_Reflection_Assembly_GetReferencedAssemblies (MonoReflectionAsse
 			if ((cols [MONO_ASSEMBLYREF_FLAGS] & ASSEMBLYREF_FULL_PUBLIC_KEY_FLAG)) {
 				/* public key token isn't copied - the class library will 
 		   		automatically generate it from the public key if required */
-				MONO_OBJECT_SETREF (aname, publicKey, mono_array_new (domain, mono_defaults.byte_class, pkey_len));
-				memcpy (mono_array_addr (aname->publicKey, guint8, 0), pkey_ptr, pkey_len);
+				MonoArray *pkey = mono_array_new_checked (domain, mono_defaults.byte_class, pkey_len, &error);
+				if (mono_error_set_pending_exception (&error))
+					return NULL;
+
+				MONO_OBJECT_SETREF (aname, publicKey, pkey);
+				memcpy (mono_array_addr (pkey, guint8, 0), pkey_ptr, pkey_len);
 			} else {
-				MONO_OBJECT_SETREF (aname, keyToken, mono_array_new (domain, mono_defaults.byte_class, pkey_len));
-				memcpy (mono_array_addr (aname->keyToken, guint8, 0), pkey_ptr, pkey_len);
+				MonoArray *keyToken = mono_array_new_checked (domain, mono_defaults.byte_class, pkey_len, &error);
+				if (mono_error_set_pending_exception (&error))
+					return NULL;
+
+				MONO_OBJECT_SETREF (aname, keyToken, keyToken);
+				memcpy (mono_array_addr (keyToken, guint8, 0), pkey_ptr, pkey_len);
 			}
 		} else {
-			MONO_OBJECT_SETREF (aname, keyToken, mono_array_new (domain, mono_defaults.byte_class, 0));
+			MonoArray *keyToken = mono_array_new_checked (domain, mono_defaults.byte_class, 0, &error);
+			if (mono_error_set_pending_exception (&error))
+				return NULL;
+
+			MONO_OBJECT_SETREF (aname, keyToken, keyToken);
 		}
 		
 		/* note: this function doesn't return the codebase on purpose (i.e. it can
@@ -4935,13 +5050,16 @@ ICALL_EXPORT void *
 ves_icall_System_Reflection_Assembly_GetManifestResourceInternal (MonoReflectionAssembly *assembly, MonoString *name, gint32 *size, MonoReflectionModule **ref_module) 
 {
 	MonoError error;
-	char *n = mono_string_to_utf8 (name);
 	MonoTableInfo *table = &assembly->assembly->image->tables [MONO_TABLE_MANIFESTRESOURCE];
 	guint32 i;
 	guint32 cols [MONO_MANIFEST_SIZE];
 	guint32 impl, file_idx;
 	const char *val;
 	MonoImage *module;
+
+	char *n = mono_string_to_utf8_checked (name, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	for (i = 0; i < table->rows; ++i) {
 		mono_metadata_decode_row (table, i, cols, MONO_MANIFEST_SIZE);
@@ -4989,7 +5107,9 @@ ves_icall_System_Reflection_Assembly_GetManifestResourceInfoInternal (MonoReflec
 	const char *val;
 	char *n;
 
-	n = mono_string_to_utf8 (name);
+	n = mono_string_to_utf8_checked (name, &error);
+	if (mono_error_set_pending_exception (&error))
+		return FALSE;
 	for (i = 0; i < table->rows; ++i) {
 		mono_metadata_decode_row (table, i, cols, MONO_MANIFEST_SIZE);
 		val = mono_metadata_string_heap (assembly->assembly->image, cols [MONO_MANIFEST_NAME]);
@@ -5052,6 +5172,7 @@ ves_icall_System_Reflection_Assembly_GetManifestResourceInfoInternal (MonoReflec
 ICALL_EXPORT MonoObject*
 ves_icall_System_Reflection_Assembly_GetFilesInternal (MonoReflectionAssembly *assembly, MonoString *name, MonoBoolean resource_modules) 
 {
+	MonoError error;
 	MonoTableInfo *table = &assembly->assembly->image->tables [MONO_TABLE_FILE];
 	MonoArray *result = NULL;
 	int i, count;
@@ -5060,7 +5181,10 @@ ves_icall_System_Reflection_Assembly_GetFilesInternal (MonoReflectionAssembly *a
 
 	/* check hash if needed */
 	if (name) {
-		n = mono_string_to_utf8 (name);
+		n = mono_string_to_utf8_checked (name, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
+
 		for (i = 0; i < table->rows; ++i) {
 			val = mono_metadata_string_heap (assembly->assembly->image, mono_metadata_decode_row_col (table, i, MONO_FILE_NAME));
 			if (strcmp (val, n) == 0) {
@@ -5082,7 +5206,10 @@ ves_icall_System_Reflection_Assembly_GetFilesInternal (MonoReflectionAssembly *a
 			count ++;
 	}
 
-	result = mono_array_new (mono_object_domain (assembly), mono_defaults.string_class, count);
+	result = mono_array_new_checked (mono_object_domain (assembly), mono_defaults.string_class, count, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
+
 
 	count = 0;
 	for (i = 0; i < table->rows; ++i) {
@@ -5126,7 +5253,9 @@ ves_icall_System_Reflection_Assembly_GetModulesInternal (MonoReflectionAssembly 
 			real_module_count ++;
 
 	klass = mono_class_get_module_class ();
-	res = mono_array_new (domain, klass, 1 + real_module_count + file_count);
+	res = mono_array_new_checked (domain, klass, 1 + real_module_count + file_count, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	MonoReflectionModule *image_obj = mono_module_get_object_checked (domain, image, &error);
 	if (mono_error_set_pending_exception (&error))
@@ -5346,7 +5475,7 @@ ves_icall_System_MonoType_getFullName (MonoReflectionType *object, gboolean full
 }
 
 ICALL_EXPORT int
-vell_icall_MonoType_get_core_clr_security_level (MonoReflectionType *rfield)
+vell_icall_RuntimeType_get_core_clr_security_level (MonoReflectionType *rfield)
 {
 	MonoError error;
 	MonoClass *klass = mono_class_from_mono_type (rfield->type);
@@ -5454,11 +5583,15 @@ fill_reflection_assembly_name (MonoDomain *domain, MonoReflectionAssemblyName *a
 		pkey_ptr = (char*)name->public_key;
 		pkey_len = mono_metadata_decode_blob_size (pkey_ptr, &pkey_ptr);
 
-		MONO_OBJECT_SETREF (aname, publicKey, mono_array_new (domain, mono_defaults.byte_class, pkey_len));
+		MonoArray *pkey = mono_array_new_checked (domain, mono_defaults.byte_class, pkey_len, error);
+		return_if_nok (error);
+		MONO_OBJECT_SETREF (aname, publicKey, pkey);
 		memcpy (mono_array_addr (aname->publicKey, guint8, 0), pkey_ptr, pkey_len);
 		aname->flags |= ASSEMBLYREF_FULL_PUBLIC_KEY_FLAG;
 	} else if (default_publickey) {
-		MONO_OBJECT_SETREF (aname, publicKey, mono_array_new (domain, mono_defaults.byte_class, 0));
+		MonoArray *pkey = mono_array_new_checked (domain, mono_defaults.byte_class, 0, error);
+		return_if_nok (error);
+		MONO_OBJECT_SETREF (aname, publicKey, pkey);
 		aname->flags |= ASSEMBLYREF_FULL_PUBLIC_KEY_FLAG;
 	}
 
@@ -5467,8 +5600,11 @@ fill_reflection_assembly_name (MonoDomain *domain, MonoReflectionAssemblyName *a
 		int i, j;
 		char *p;
 
-		MONO_OBJECT_SETREF (aname, keyToken, mono_array_new (domain, mono_defaults.byte_class, 8));
-		p = mono_array_addr (aname->keyToken, char, 0);
+		MonoArray *keyToken = mono_array_new_checked (domain, mono_defaults.byte_class, 8, error);
+		return_if_nok (error);
+		
+		MONO_OBJECT_SETREF (aname, keyToken, keyToken);
+		p = mono_array_addr (keyToken, char, 0);
 
 		for (i = 0, j = 0; i < 8; i++) {
 			*p = g_ascii_xdigit_value (name->public_key_token [j++]) << 4;
@@ -5476,7 +5612,9 @@ fill_reflection_assembly_name (MonoDomain *domain, MonoReflectionAssemblyName *a
 			p++;
 		}
 	} else if (default_token) {
-		MONO_OBJECT_SETREF (aname, keyToken, mono_array_new (domain, mono_defaults.byte_class, 0));
+		MonoArray *keyToken = mono_array_new_checked (domain, mono_defaults.byte_class, 0, error);
+		return_if_nok (error);
+		MONO_OBJECT_SETREF (aname, keyToken, keyToken);
 	}
 }
 
@@ -5499,15 +5637,20 @@ ICALL_EXPORT void
 ves_icall_System_Reflection_Assembly_FillName (MonoReflectionAssembly *assembly, MonoReflectionAssemblyName *aname)
 {
 	MonoError error;
-	gchar *absolute;
+	gchar *absolute, *dirname;
 	MonoAssembly *mass = assembly->assembly;
 
+	/* XXX this is duplicated code to compute the codebase URI, unify it */
 	if (g_path_is_absolute (mass->image->name)) {
-		fill_reflection_assembly_name (mono_object_domain (assembly), aname, &mass->aname, mass->image->name, TRUE, TRUE, TRUE, &error);
-		mono_error_set_pending_exception (&error);
-		return;
+		absolute = g_strdup (mass->image->name);
+		dirname = g_path_get_dirname (absolute);
+	} else {
+		absolute = g_build_filename (mass->basedir, mass->image->name, NULL);
+		dirname = g_strdup (mass->basedir);
 	}
-	absolute = g_build_filename (mass->basedir, mass->image->name, NULL);
+
+	replace_shadow_path (mono_object_domain (assembly), dirname, &absolute);
+	g_free (dirname);
 
 	fill_reflection_assembly_name (mono_object_domain (assembly), aname, &mass->aname, absolute, TRUE, TRUE, TRUE, &error);
 	mono_error_set_pending_exception (&error);
@@ -5526,7 +5669,9 @@ ves_icall_System_Reflection_Assembly_InternalGetAssemblyName (MonoString *fname,
 	MonoAssemblyName name;
 	char *dirname;
 
-	filename = mono_string_to_utf8 (fname);
+	filename = mono_string_to_utf8_checked (fname, &error);
+	if (mono_error_set_pending_exception (&error))
+		return;
 
 	dirname = g_path_get_dirname (filename);
 	replace_shadow_path (mono_domain_get (), dirname, &filename);
@@ -5626,8 +5771,10 @@ mono_module_get_types (MonoDomain *domain, MonoImage *image, MonoArray **excepti
 	} else {
 		count = tdef->rows - 1;
 	}
-	res = mono_array_new (domain, mono_defaults.monotype_class, count);
-	*exceptions = mono_array_new (domain, mono_defaults.exception_class, count);
+	res = mono_array_new_checked (domain, mono_defaults.runtimetype_class, count, error);
+	return_val_if_nok (error, NULL);
+	*exceptions = mono_array_new_checked (domain, mono_defaults.exception_class, count, error);
+	return_val_if_nok (error, NULL);
 	count = 0;
 	for (i = 1; i < tdef->rows; ++i) {
 		if (!exportedOnly || mono_module_type_is_visible (tdef, image, i + 1)) {
@@ -5691,12 +5838,16 @@ ves_icall_System_Reflection_Assembly_GetTypes (MonoReflectionAssembly *assembly,
 					len1 = mono_array_length (res);
 					len2 = mono_array_length (res2);
 
-					res3 = mono_array_new (domain, mono_defaults.monotype_class, len1 + len2);
+					res3 = mono_array_new_checked (domain, mono_defaults.runtimetype_class, len1 + len2, &error);
+					if (mono_error_set_pending_exception (&error))
+						return NULL;
 					mono_array_memcpy_refs (res3, 0, res, 0, len1);
 					mono_array_memcpy_refs (res3, len1, res2, 0, len2);
 					res = res3;
 
-					ex3 = mono_array_new (domain, mono_defaults.monotype_class, len1 + len2);
+					ex3 = mono_array_new_checked (domain, mono_defaults.runtimetype_class, len1 + len2, &error);
+					if (mono_error_set_pending_exception (&error))
+						return NULL;
 					mono_array_memcpy_refs (ex3, 0, exceptions, 0, len1);
 					mono_array_memcpy_refs (ex3, len1, ex2, 0, len2);
 					exceptions = ex3;
@@ -5736,7 +5887,11 @@ ves_icall_System_Reflection_Assembly_GetTypes (MonoReflectionAssembly *assembly,
 		MonoArray *exl = NULL;
 		int j, length = g_list_length (list) + ex_count;
 
-		exl = mono_array_new (domain, mono_defaults.exception_class, length);
+		exl = mono_array_new_checked (domain, mono_defaults.exception_class, length, &error);
+		if (mono_error_set_pending_exception (&error)) {
+			g_list_free (list);
+			return NULL;
+		}
 		/* Types for which mono_class_get_checked () succeeded */
 		for (i = 0, tmp = list; tmp; i++, tmp = tmp->next) {
 			MonoException *exc = mono_class_get_exception_for_failure ((MonoClass *)tmp->data);
@@ -5777,7 +5932,10 @@ ves_icall_System_Reflection_AssemblyName_ParseName (MonoReflectionAssemblyName *
 	gboolean is_token_defined;
 
 	aname.public_key = NULL;
-	val = mono_string_to_utf8 (assname);
+	val = mono_string_to_utf8_checked (assname, &error);
+	if (mono_error_set_pending_exception (&error))
+		return FALSE;
+
 	if (!mono_assembly_name_parse_full (val, &aname, TRUE, &is_version_defined, &is_token_defined)) {
 		g_free ((guint8*) aname.public_key);
 		g_free (val);
@@ -5877,9 +6035,11 @@ ves_icall_System_Reflection_Module_InternalGetTypes (MonoReflectionModule *modul
 	MonoArray *exceptions;
 	int i;
 
-	if (!module->image)
-		return mono_array_new (mono_object_domain (module), mono_defaults.monotype_class, 0);
-	else {
+	if (!module->image) {
+		MonoArray *arr = mono_array_new_checked (mono_object_domain (module), mono_defaults.runtimetype_class, 0, &error);
+		mono_error_set_pending_exception (&error);
+		return arr;
+	} else {
 		MonoArray *res;
 
 		res = mono_module_get_types (mono_object_domain (module), module->image, &exceptions, FALSE, &error);
@@ -6065,7 +6225,9 @@ ves_icall_System_Reflection_Module_ResolveStringToken (MonoImage *image, guint32
 
 	/* FIXME: What to do if the index points into the middle of a string ? */
 
-	return mono_ldstr (mono_domain_get (), image, index);
+	MonoString *result = mono_ldstr_checked (mono_domain_get (), image, index, &error);
+	mono_error_set_pending_exception (&error);
+	return result;
 }
 
 ICALL_EXPORT MonoClassField*
@@ -6196,8 +6358,9 @@ ves_icall_System_Reflection_Module_ResolveMemberToken (MonoImage *image, guint32
 }
 
 ICALL_EXPORT MonoArray*
-ves_icall_System_Reflection_Module_ResolveSignature (MonoImage *image, guint32 token, MonoResolveTokenError *error)
+ves_icall_System_Reflection_Module_ResolveSignature (MonoImage *image, guint32 token, MonoResolveTokenError *resolve_error)
 {
+	MonoError error;
 	int table = mono_metadata_token_table (token);
 	int idx = mono_metadata_token_index (token);
 	MonoTableInfo *tables = image->tables;
@@ -6205,7 +6368,7 @@ ves_icall_System_Reflection_Module_ResolveSignature (MonoImage *image, guint32 t
 	const char *ptr;
 	MonoArray *res;
 
-	*error = ResolveTokenError_OutOfRange;
+	*resolve_error = ResolveTokenError_OutOfRange;
 
 	/* FIXME: Support other tables ? */
 	if (table != MONO_TABLE_STANDALONESIG)
@@ -6222,7 +6385,9 @@ ves_icall_System_Reflection_Module_ResolveSignature (MonoImage *image, guint32 t
 	ptr = mono_metadata_blob_heap (image, sig);
 	len = mono_metadata_decode_blob_size (ptr, &ptr);
 
-	res = mono_array_new (mono_domain_get (), mono_defaults.byte_class, len);
+	res = mono_array_new_checked (mono_domain_get (), mono_defaults.byte_class, len, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	memcpy (mono_array_addr (res, guint8, 0), ptr, len);
 	return res;
 }
@@ -6234,8 +6399,10 @@ ves_icall_ModuleBuilder_create_modified_type (MonoReflectionTypeBuilder *tb, Mon
 	MonoReflectionType *ret;
 	MonoClass *klass;
 	int isbyref = 0, rank;
-	char *str = mono_string_to_utf8 (smodifiers);
 	char *p;
+	char *str = mono_string_to_utf8_checked (smodifiers, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	klass = mono_class_from_mono_type (tb->type.type);
 	p = str;
@@ -6326,7 +6493,7 @@ check_for_invalid_type (MonoClass *klass, MonoError *error)
 
 }
 ICALL_EXPORT MonoReflectionType *
-ves_icall_Type_make_array_type (MonoReflectionType *type, int rank)
+ves_icall_RuntimeType_make_array_type (MonoReflectionType *type, int rank)
 {
 	MonoError error;
 	MonoReflectionType *ret;
@@ -6348,7 +6515,7 @@ ves_icall_Type_make_array_type (MonoReflectionType *type, int rank)
 }
 
 ICALL_EXPORT MonoReflectionType *
-ves_icall_Type_make_byref_type (MonoReflectionType *type)
+ves_icall_RuntimeType_make_byref_type (MonoReflectionType *type)
 {
 	MonoError error;
 	MonoReflectionType *ret;
@@ -6370,7 +6537,7 @@ ves_icall_Type_make_byref_type (MonoReflectionType *type)
 }
 
 ICALL_EXPORT MonoReflectionType *
-ves_icall_Type_MakePointerType (MonoReflectionType *type)
+ves_icall_RuntimeType_MakePointerType (MonoReflectionType *type)
 {
 	MonoError error;
 	MonoReflectionType *ret;
@@ -6431,16 +6598,21 @@ ves_icall_System_Delegate_CreateDelegate_internal (MonoReflectionType *type, Mon
 
 	if (method_is_dynamic (method)) {
 		/* Creating a trampoline would leak memory */
-		func = mono_compile_method (method);
+		func = mono_compile_method_checked (method, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
 	} else {
 		if (target && method->flags & METHOD_ATTRIBUTE_VIRTUAL && method->klass != mono_object_class (target))
 			method = mono_object_get_virtual_method (target, method);
-		func = mono_create_ftnptr (mono_domain_get (),
-			mono_runtime_create_jump_trampoline (mono_domain_get (), method, TRUE));
+		gpointer trampoline = mono_runtime_create_jump_trampoline (mono_domain_get (), method, TRUE, &error);
+		if (mono_error_set_pending_exception (&error))
+			return NULL;
+		func = mono_create_ftnptr (mono_domain_get (), trampoline);
 	}
 
-	mono_delegate_ctor_with_method (delegate, target, func, method);
-
+	mono_delegate_ctor_with_method (delegate, target, func, method, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	return delegate;
 }
 
@@ -6594,17 +6766,15 @@ ves_icall_Remoting_RealProxy_GetTransparentProxy (MonoObject *this_obj, MonoStri
 	}
 
 	tp->custom_type_info = (mono_object_isinst_checked (this_obj, mono_defaults.iremotingtypeinfo_class, &error) != NULL);
-	if (!is_ok (&error)) {
-		mono_error_set_pending_exception (&error);
+	if (mono_error_set_pending_exception (&error))
 		return NULL;
-	}
 	tp->remote_class = mono_remote_class (domain, class_name, klass, &error);
-	if (!is_ok (&error)) {
-		mono_error_set_pending_exception (&error);
+	if (mono_error_set_pending_exception (&error))
 		return NULL;
-	}
 
-	res->vtable = (MonoVTable *)mono_remote_class_vtable (domain, tp->remote_class, rp);
+	res->vtable = (MonoVTable *)mono_remote_class_vtable (domain, tp->remote_class, rp, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	return res;
 }
 
@@ -6730,13 +6900,16 @@ ves_icall_System_Environment_GetIs64BitOperatingSystem (void)
 ICALL_EXPORT MonoString *
 ves_icall_System_Environment_GetEnvironmentVariable (MonoString *name)
 {
+	MonoError error;
 	const gchar *value;
 	gchar *utf8_name;
 
 	if (name == NULL)
 		return NULL;
 
-	utf8_name = mono_string_to_utf8 (name);	/* FIXME: this should be ascii */
+	utf8_name = mono_string_to_utf8_checked (name, &error);	/* FIXME: this should be ascii */
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	value = g_getenv (utf8_name);
 
 	g_free (utf8_name);
@@ -6772,9 +6945,19 @@ char **environ;
 #endif
 
 ICALL_EXPORT MonoArray *
+ves_icall_System_Environment_GetCoomandLineArgs (void)
+{
+	MonoError error;
+	MonoArray *result = mono_runtime_get_main_args_checked (&error);
+	mono_error_set_pending_exception (&error);
+	return result;
+}
+
+ICALL_EXPORT MonoArray *
 ves_icall_System_Environment_GetEnvironmentVariableNames (void)
 {
 #ifdef HOST_WIN32
+	MonoError error;
 	MonoArray *names;
 	MonoDomain *domain;
 	MonoString *str;
@@ -6798,7 +6981,9 @@ ves_icall_System_Environment_GetEnvironmentVariableNames (void)
 	}
 
 	domain = mono_domain_get ();
-	names = mono_array_new (domain, mono_defaults.string_class, n);
+	names = mono_array_new_checked (domain, mono_defaults.string_class, n, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	if (env_strings) {
 		n = 0;
@@ -6827,6 +7012,7 @@ ves_icall_System_Environment_GetEnvironmentVariableNames (void)
 	return names;
 
 #else
+	MonoError error;
 	MonoArray *names;
 	MonoDomain *domain;
 	MonoString *str;
@@ -6838,7 +7024,9 @@ ves_icall_System_Environment_GetEnvironmentVariableNames (void)
 		++ n;
 
 	domain = mono_domain_get ();
-	names = mono_array_new (domain, mono_defaults.string_class, n);
+	names = mono_array_new_checked (domain, mono_defaults.string_class, n, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 
 	n = 0;
 	for (e = environ; *e != 0; ++ e) {
@@ -6856,14 +7044,6 @@ ves_icall_System_Environment_GetEnvironmentVariableNames (void)
 	return names;
 #endif
 }
-
-/*
- * If your platform lacks setenv/unsetenv, you must upgrade your glib.
- */
-#if !GLIB_CHECK_VERSION(2,4,0)
-#define g_setenv(a,b,c)   setenv(a,b,c)
-#define g_unsetenv(a) unsetenv(a)
-#endif
 
 ICALL_EXPORT void
 ves_icall_System_Environment_InternalSetEnvironmentVariable (MonoString *name, MonoString *value)
@@ -6890,7 +7070,9 @@ ves_icall_System_Environment_InternalSetEnvironmentVariable (MonoString *name, M
 	g_free (utf16_name);
 	g_free (utf16_value);
 #else
-	utf8_name = mono_string_to_utf8 (name);	/* FIXME: this should be ascii */
+	utf8_name = mono_string_to_utf8_checked (name, &error);	/* FIXME: this should be ascii */
+	if (mono_error_set_pending_exception (&error))
+		return;
 
 	if ((value == NULL) || (mono_string_length (value) == 0) || (mono_string_chars (value)[0] == 0)) {
 		g_unsetenv (utf8_name);
@@ -7001,7 +7183,10 @@ ves_icall_System_Environment_GetLogicalDrives (void)
 	} while (*dname);
 
 	dname = ptr;
-	result = mono_array_new (domain, mono_defaults.string_class, ndrives);
+	result = mono_array_new_checked (domain, mono_defaults.string_class, ndrives, &error);
+	if (mono_error_set_pending_exception (&error))
+		goto leave;
+
 	ndrives = 0;
 	do {
 		len = 0;
@@ -7009,12 +7194,13 @@ ves_icall_System_Environment_GetLogicalDrives (void)
 		while (*u16) { u16++; len ++; }
 		drivestr = mono_string_new_utf16_checked (domain, dname, len, &error);
 		if (mono_error_set_pending_exception (&error))
-			return NULL;
+			goto leave;
 
 		mono_array_setref (result, ndrives++, drivestr);
 		while (*dname++);
 	} while (*dname);
 
+leave:
 	if (ptr != buf)
 		g_free (ptr);
 
@@ -7024,11 +7210,14 @@ ves_icall_System_Environment_GetLogicalDrives (void)
 ICALL_EXPORT MonoString *
 ves_icall_System_IO_DriveInfo_GetDriveFormat (MonoString *path)
 {
+	MonoError error;
 	gunichar2 volume_name [MAX_PATH + 1];
 	
 	if (GetVolumeInformation (mono_string_chars (path), NULL, 0, NULL, NULL, NULL, volume_name, MAX_PATH + 1) == FALSE)
 		return NULL;
-	return mono_string_from_utf16 (volume_name);
+	MonoString *result = mono_string_from_utf16_checked (volume_name, &error);
+	mono_error_set_pending_exception (&error);
+	return result;
 }
 
 ICALL_EXPORT MonoString *
@@ -7133,18 +7322,18 @@ ves_icall_System_Environment_BroadcastSettingChange (void)
 #endif
 }
 
+ICALL_EXPORT
+gint32
+ves_icall_System_Environment_get_TickCount (void)
+{
+	/* this will overflow after ~24 days */
+	return (gint32) (mono_msec_boottime () & 0xffffffff);
+}
+
 ICALL_EXPORT gint32
 ves_icall_System_Runtime_Versioning_VersioningHelper_GetRuntimeId (void)
 {
 	return 9;
-}
-
-ICALL_EXPORT void
-ves_icall_MonoMethodMessage_InitMessage (MonoMethodMessage *this_obj, 
-					 MonoReflectionMethod *method,
-					 MonoArray *out_args)
-{
-	mono_message_init (mono_object_domain (this_obj), this_obj, method, out_args);
 }
 
 #ifndef DISABLE_REMOTING
@@ -7267,7 +7456,9 @@ ves_icall_System_Runtime_Activation_ActivationServices_AllocateUninitializedClas
 
 	if (klass->rank >= 1) {
 		g_assert (klass->rank == 1);
-		return (MonoObject *) mono_array_new (domain, klass->element_class, 0);
+		ret = (MonoObject *) mono_array_new_checked (domain, klass->element_class, 0, &error);
+		mono_error_set_pending_exception (&error);
+		return ret;
 	} else {
 		MonoVTable *vtable = mono_class_vtable_full (domain, klass, &error);
 		if (!is_ok (&error)) {
@@ -7327,7 +7518,10 @@ ves_icall_System_IO_DriveInfo_GetDriveType (MonoString *root_path_name)
 ICALL_EXPORT gpointer
 ves_icall_RuntimeMethodHandle_GetFunctionPointer (MonoMethod *method)
 {
-	return mono_compile_method (method);
+	MonoError error;
+	gpointer result = mono_compile_method_checked (method, &error);
+	mono_error_set_pending_exception (&error);
+	return result;
 }
 
 ICALL_EXPORT MonoString *
@@ -7353,9 +7547,11 @@ ves_icall_System_Configuration_DefaultConfig_get_machine_config_path (void)
 	return mcpath;
 }
 
+/* this is an icall */
 static MonoString *
 get_bundled_app_config (void)
 {
+	MonoError error;
 	const gchar *app_config;
 	MonoDomain *domain;
 	MonoString *file;
@@ -7369,7 +7565,9 @@ get_bundled_app_config (void)
 		return NULL;
 
 	// Retrieve config file and remove the extension
-	config_file_name = mono_string_to_utf8 (file);
+	config_file_name = mono_string_to_utf8_checked (file, &error);
+	if (mono_error_set_pending_exception (&error))
+		return NULL;
 	config_file_path = mono_portability_find_file (config_file_name, TRUE);
 	if (!config_file_path)
 		config_file_path = config_file_name;
@@ -7896,7 +8094,8 @@ type_array_from_modifiers (MonoImage *image, MonoType *type, int optional, MonoE
 	}
 	if (!count)
 		return NULL;
-	res = mono_array_new (mono_domain_get (), mono_defaults.systemtype_class, count);
+	res = mono_array_new_checked (mono_domain_get (), mono_defaults.systemtype_class, count, error);
+	return_val_if_nok (error, NULL);
 	count = 0;
 	for (i = 0; i < type->num_mods; ++i) {
 		if ((optional && !type->modifiers [i].required) || (!optional && type->modifiers [i].required)) {

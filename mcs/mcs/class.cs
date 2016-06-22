@@ -940,7 +940,8 @@ namespace Mono.CSharp
 
 		TypeParameterSpec[] ITypeDefinition.TypeParameters {
 			get {
-				return PartialContainer.CurrentTypeParameters.Types;
+				var ctp = PartialContainer.CurrentTypeParameters;
+				return ctp == null ? TypeParameterSpec.EmptyTypes : ctp.Types;
 			}
 		}
 
@@ -2382,7 +2383,7 @@ namespace Mono.CSharp
 			var ifaces = PartialContainer.Interfaces;
 			if (ifaces != null) {
 				foreach (TypeSpec t in ifaces){
-					if (t == mb.InterfaceType)
+					if (t == mb.InterfaceType || t == null)
 						return true;
 
 					var expanded_base = t.Interfaces;

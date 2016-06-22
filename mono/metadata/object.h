@@ -72,29 +72,37 @@ MONO_API int            mono_string_length (MonoString *s);
 MONO_RT_EXTERNAL_ONLY MONO_API MonoObject *
 mono_object_new		    (MonoDomain *domain, MonoClass *klass);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject *
 mono_object_new_specific    (MonoVTable *vtable);
 
 /* can be used for classes without finalizer in non-profiling mode */
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject *
 mono_object_new_fast	    (MonoVTable *vtable);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject *
 mono_object_new_alloc_specific (MonoVTable *vtable);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject *
 mono_object_new_from_token  (MonoDomain *domain, MonoImage *image, uint32_t token);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoArray*
 mono_array_new		    (MonoDomain *domain, MonoClass *eclass, uintptr_t n);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoArray*
 mono_array_new_full	    (MonoDomain *domain, MonoClass *array_class,
 			     uintptr_t *lengths, intptr_t *lower_bounds);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoArray *
 mono_array_new_specific	    (MonoVTable *vtable, uintptr_t n);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoArray*
 mono_array_clone	    (MonoArray *array);
 
@@ -104,12 +112,15 @@ mono_array_addr_with_size   (MonoArray *array, int size, uintptr_t idx);
 MONO_API uintptr_t
 mono_array_length           (MonoArray *array);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString*
 mono_string_new_utf16	    (MonoDomain *domain, const mono_unichar2 *text, int32_t len);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString*
 mono_string_new_size	    (MonoDomain *domain, int32_t len);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString*
 mono_ldstr		    (MonoDomain *domain, MonoImage *image, uint32_t str_index);
 
@@ -126,12 +137,15 @@ mono_string_new		    (MonoDomain *domain, const char *text);
 MONO_API MonoString*
 mono_string_new_wrapper	    (const char *text);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString*
 mono_string_new_len	    (MonoDomain *domain, const char *text, unsigned int length);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString*
 mono_string_new_utf32	    (MonoDomain *domain, const mono_unichar4 *text, int32_t len);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API char *
 mono_string_to_utf8	    (MonoString *string_obj);
 
@@ -144,9 +158,11 @@ mono_string_to_utf16	    (MonoString *string_obj);
 MONO_API mono_unichar4 *
 mono_string_to_utf32	    (MonoString *string_obj);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString *
 mono_string_from_utf16	    (mono_unichar2 *data);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString *
 mono_string_from_utf32	    (mono_unichar4 *data);
 
@@ -159,6 +175,7 @@ mono_string_hash            (MonoString *s);
 MONO_API int
 mono_object_hash            (MonoObject* obj);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoString *
 mono_object_to_string (MonoObject *obj, MonoObject **exc);
 
@@ -181,6 +198,7 @@ mono_object_get_class       (MonoObject *obj);
 MONO_API void*
 mono_object_unbox	    (MonoObject *obj);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject *
 mono_object_clone	    (MonoObject *obj);
 
@@ -239,10 +257,12 @@ mono_get_delegate_begin_invoke (MonoClass *klass);
 MONO_API MonoMethod *
 mono_get_delegate_end_invoke (MonoClass *klass);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject*
 mono_runtime_delegate_invoke (MonoObject *delegate, void **params, 
 			      MonoObject **exc);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject*
 mono_runtime_invoke_array   (MonoMethod *method, void *obj, MonoArray *params,
 			     MonoObject **exc);
@@ -250,6 +270,7 @@ mono_runtime_invoke_array   (MonoMethod *method, void *obj, MonoArray *params,
 MONO_API void*
 mono_method_get_unmanaged_thunk (MonoMethod *method);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoArray*
 mono_runtime_get_main_args  (void);
 
@@ -258,10 +279,12 @@ mono_runtime_exec_managed_code (MonoDomain *domain,
 				MonoMainThreadFunc main_func,
 				void* main_args);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API int
 mono_runtime_run_main	    (MonoMethod *method, int argc, char* argv[], 
 			     MonoObject **exc);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API int
 mono_runtime_exec_main	    (MonoMethod *method, MonoArray *args,
 			     MonoObject **exc);
@@ -295,6 +318,7 @@ mono_unhandled_exception    (MonoObject *exc);
 MONO_API void
 mono_print_unhandled_exception (MonoObject *exc);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API void* 
 mono_compile_method	   (MonoMethod *method);
 
@@ -308,6 +332,7 @@ mono_field_static_set_value (MonoVTable *vt, MonoClassField *field, void *value)
 MONO_API void
 mono_field_get_value (MonoObject *obj, MonoClassField *field, void *value);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API void
 mono_field_static_get_value (MonoVTable *vt, MonoClassField *field, void *value);
 
@@ -315,9 +340,11 @@ MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject *
 mono_field_get_value_object (MonoDomain *domain, MonoClassField *field, MonoObject *obj);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API void
 mono_property_set_value (MonoProperty *prop, void *obj, void **params, MonoObject **exc);
 
+MONO_RT_EXTERNAL_ONLY
 MONO_API MonoObject*
 mono_property_get_value (MonoProperty *prop, void *obj, void **params, MonoObject **exc);
 

@@ -65,7 +65,7 @@ typedef void (*MonoThreadCleanupFunc) (MonoNativeThreadId tid);
 /* INFO has type MonoThreadInfo* */
 typedef void (*MonoThreadNotifyPendingExcFunc) (gpointer info);
 
-MonoInternalThread* mono_thread_create_internal (MonoDomain *domain, gpointer func, gpointer arg, gboolean threadpool_thread, guint32 stack_size);
+MonoInternalThread* mono_thread_create_internal (MonoDomain *domain, gpointer func, gpointer arg, gboolean threadpool_thread, guint32 stack_size, MonoError *error);
 
 void mono_threads_install_cleanup (MonoThreadCleanupFunc func);
 
@@ -87,8 +87,8 @@ void ves_icall_System_Threading_Thread_SetCachedCurrentUICulture (MonoThread *th
 HANDLE ves_icall_System_Threading_Mutex_CreateMutex_internal(MonoBoolean owned, MonoString *name, MonoBoolean *created);
 MonoBoolean ves_icall_System_Threading_Mutex_ReleaseMutex_internal (HANDLE handle );
 HANDLE ves_icall_System_Threading_Mutex_OpenMutex_internal (MonoString *name, gint32 rights, gint32 *error);
-HANDLE ves_icall_System_Threading_Semaphore_CreateSemaphore_internal (gint32 initialCount, gint32 maximumCount, MonoString *name, MonoBoolean *created);
-gint32 ves_icall_System_Threading_Semaphore_ReleaseSemaphore_internal (HANDLE handle, gint32 releaseCount, MonoBoolean *fail);
+HANDLE ves_icall_System_Threading_Semaphore_CreateSemaphore_internal (gint32 initialCount, gint32 maximumCount, MonoString *name, gint32 *error);
+MonoBoolean ves_icall_System_Threading_Semaphore_ReleaseSemaphore_internal (HANDLE handle, gint32 releaseCount, gint32 *prevcount);
 HANDLE ves_icall_System_Threading_Semaphore_OpenSemaphore_internal (MonoString *name, gint32 rights, gint32 *error);
 HANDLE ves_icall_System_Threading_Events_CreateEvent_internal (MonoBoolean manual, MonoBoolean initial, MonoString *name, MonoBoolean *created);
 gboolean ves_icall_System_Threading_Events_SetEvent_internal (HANDLE handle);
@@ -96,10 +96,10 @@ gboolean ves_icall_System_Threading_Events_ResetEvent_internal (HANDLE handle);
 void ves_icall_System_Threading_Events_CloseEvent_internal (HANDLE handle);
 HANDLE ves_icall_System_Threading_Events_OpenEvent_internal (MonoString *name, gint32 rights, gint32 *error);
 
-gint32 ves_icall_System_Threading_WaitHandle_WaitAll_internal(MonoArray *mono_handles, gint32 ms, gboolean exitContext);
-gint32 ves_icall_System_Threading_WaitHandle_WaitAny_internal(MonoArray *mono_handles, gint32 ms, gboolean exitContext);
-gint32 ves_icall_System_Threading_WaitHandle_WaitOne_internal(HANDLE handle, gint32 ms, gboolean exitContext);
-gint32 ves_icall_System_Threading_WaitHandle_SignalAndWait_Internal (HANDLE toSignal, HANDLE toWait, gint32 ms, gboolean exitContext);
+gint32 ves_icall_System_Threading_WaitHandle_WaitAll_internal(MonoArray *mono_handles, gint32 ms);
+gint32 ves_icall_System_Threading_WaitHandle_WaitAny_internal(MonoArray *mono_handles, gint32 ms);
+gint32 ves_icall_System_Threading_WaitHandle_WaitOne_internal(HANDLE handle, gint32 ms);
+gint32 ves_icall_System_Threading_WaitHandle_SignalAndWait_Internal (HANDLE toSignal, HANDLE toWait, gint32 ms);
 
 MonoArray* ves_icall_System_Threading_Thread_ByteArrayToRootDomain (MonoArray *arr);
 MonoArray* ves_icall_System_Threading_Thread_ByteArrayToCurrentDomain (MonoArray *arr);
@@ -193,6 +193,7 @@ MonoInternalThread *mono_thread_internal_current (void);
 void mono_thread_internal_check_for_interruption_critical (MonoInternalThread *thread);
 
 void mono_thread_internal_stop (MonoInternalThread *thread);
+void mono_thread_internal_abort (MonoInternalThread *thread);
 
 gboolean mono_thread_internal_has_appdomain_ref (MonoInternalThread *thread, MonoDomain *domain);
 
@@ -201,7 +202,7 @@ void mono_thread_internal_reset_abort (MonoInternalThread *thread);
 void mono_thread_internal_unhandled_exception (MonoObject* exc);
 
 void mono_alloc_special_static_data_free (GHashTable *special_static_fields);
-void mono_thread_current_check_pending_interrupt (void);
+gboolean mono_thread_current_check_pending_interrupt (void);
 
 void mono_thread_set_state (MonoInternalThread *thread, MonoThreadState state);
 void mono_thread_clr_state (MonoInternalThread *thread, MonoThreadState state);
@@ -216,9 +217,7 @@ gunichar2* mono_thread_get_name (MonoInternalThread *this_obj, guint32 *name_len
 
 MONO_API MonoException* mono_thread_get_undeniable_exception (void);
 
-MonoException* mono_thread_get_and_clear_pending_exception (void);
-
-void mono_thread_set_name_internal (MonoInternalThread *this_obj, MonoString *name, gboolean managed, MonoError *error);
+void mono_thread_set_name_internal (MonoInternalThread *this_obj, MonoString *name, gboolean permanent, MonoError *error);
 
 void mono_runtime_set_has_tls_get (gboolean val);
 gboolean mono_runtime_has_tls_get (void);
@@ -245,8 +244,11 @@ gpointer mono_get_special_static_data_for_thread (MonoInternalThread *thread, gu
 MonoException* mono_thread_resume_interruption (void);
 void mono_threads_perform_thread_dump (void);
 
+gboolean
+mono_thread_create_checked (MonoDomain *domain, gpointer func, gpointer arg, MonoError *error);
+
 MonoThread *
-mono_thread_attach_full (MonoDomain *domain, gboolean force_attach, MonoError *error);
+mono_thread_attach_full (MonoDomain *domain, gboolean force_attach);
 
 void mono_thread_init_tls (void);
 
@@ -258,5 +260,11 @@ void mono_thread_join (gpointer tid);
 void mono_thread_detach_internal (MonoInternalThread *thread);
 
 void ves_icall_System_Threading_Thread_GetStackTraces (MonoArray **out_threads, MonoArray **out_stack_traces);
+
+MONO_API gpointer
+mono_threads_attach_coop (MonoDomain *domain, gpointer *dummy);
+
+MONO_API void
+mono_threads_detach_coop (gpointer cookie, gpointer *dummy);
 
 #endif /* _MONO_METADATA_THREADS_TYPES_H_ */

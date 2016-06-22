@@ -175,10 +175,6 @@ mono_arch_get_restore_context (MonoTrampInfo **info, gboolean aot)
 	/* Restore all registers except %rip and %r11 */
 	gregs_offset = MONO_STRUCT_OFFSET (MonoContext, gregs);
 	for (i = 0; i < AMD64_NREG; ++i) {
-#if defined(__native_client_codegen__)
-		if (i == AMD64_R15)
-			continue;
-#endif
 		if (i != AMD64_RIP && i != AMD64_RSP && i != AMD64_R8 && i != AMD64_R9 && i != AMD64_R10 && i != AMD64_R11)
 			amd64_mov_reg_membase (code, i, AMD64_R11, gregs_offset + (i * 8), 8);
 	}
@@ -197,8 +193,6 @@ mono_arch_get_restore_context (MonoTrampInfo **info, gboolean aot)
 
 	/* jump to the saved IP */
 	amd64_jump_reg (code, AMD64_R11);
-
-	nacl_global_codeman_validate (&start, 256, &code);
 
 	mono_arch_flush_icache (start, code - start);
 	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_EXCEPTION_HANDLING, NULL);
@@ -225,7 +219,7 @@ mono_arch_get_call_filter (MonoTrampInfo **info, gboolean aot)
 	guint32 pos;
 	MonoJumpInfo *ji = NULL;
 	GSList *unwind_ops = NULL;
-	const guint kMaxCodeSize = NACL_SIZE (128, 256);
+	const guint kMaxCodeSize = 128;
 
 	start = code = (guint8 *)mono_global_codeman_reserve (kMaxCodeSize);
 
@@ -258,10 +252,6 @@ mono_arch_get_call_filter (MonoTrampInfo **info, gboolean aot)
 	amd64_mov_reg_membase (code, AMD64_RBP, AMD64_ARG_REG1, gregs_offset + (AMD64_RBP * 8), 8);
 	/* load callee saved regs */
 	for (i = 0; i < AMD64_NREG; ++i) {
-#if defined(__native_client_codegen__)
-		if (i == AMD64_R15)
-			continue;
-#endif
 		if (AMD64_IS_CALLEE_SAVED_REG (i) && i != AMD64_RBP)
 			amd64_mov_reg_membase (code, i, AMD64_ARG_REG1, gregs_offset + (i * 8), 8);
 	}
@@ -286,8 +276,6 @@ mono_arch_get_call_filter (MonoTrampInfo **info, gboolean aot)
 	amd64_ret (code);
 
 	g_assert ((code - start) < kMaxCodeSize);
-
-	nacl_global_codeman_validate(&start, kMaxCodeSize, &code);
 
 	mono_arch_flush_icache (start, code - start);
 	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_EXCEPTION_HANDLING, NULL);
@@ -376,7 +364,7 @@ get_throw_trampoline (MonoTrampInfo **info, gboolean rethrow, gboolean corlib, g
 	MonoJumpInfo *ji = NULL;
 	GSList *unwind_ops = NULL;
 	int i, stack_size, arg_offsets [16], ctx_offset, regs_offset, dummy_stack_space;
-	const guint kMaxCodeSize = NACL_SIZE (256, 512);
+	const guint kMaxCodeSize = 256;
 
 #ifdef TARGET_WIN32
 	dummy_stack_space = 6 * sizeof(mgreg_t);	/* Windows expects stack space allocated for all 6 dummy args. */
@@ -465,7 +453,6 @@ get_throw_trampoline (MonoTrampInfo **info, gboolean rethrow, gboolean corlib, g
 
 	g_assert ((code - start) < kMaxCodeSize);
 
-	nacl_global_codeman_validate(&start, kMaxCodeSize, &code);
 	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_EXCEPTION_HANDLING, NULL);
 
 	if (info)
@@ -1140,7 +1127,7 @@ mono_tasklets_arch_restore (void)
 	static guint8* saved = NULL;
 	guint8 *code, *start;
 	int cont_reg = AMD64_R9; /* register usable on both call conventions */
-	const guint kMaxCodeSize = NACL_SIZE (64, 128);
+	const guint kMaxCodeSize = 64;
 	
 
 	if (saved)
@@ -1165,19 +1152,20 @@ mono_tasklets_arch_restore (void)
 	amd64_movsl (code);
 
 	/* now restore the registers from the LMF */
-	NOT_IMPLEMENTED;
 	amd64_mov_reg_membase (code, AMD64_RCX, cont_reg, MONO_STRUCT_OFFSET (MonoContinuation, lmf), 8);
+	amd64_mov_reg_membase (code, AMD64_RBP, AMD64_RCX, MONO_STRUCT_OFFSET (MonoLMF, rbp), 8);
 	amd64_mov_reg_membase (code, AMD64_RSP, AMD64_RCX, MONO_STRUCT_OFFSET (MonoLMF, rsp), 8);
 
-	/* restore the lmf chain */
-	/*x86_mov_reg_membase (code, X86_ECX, X86_ESP, 12, 4);
-	x86_mov_membase_reg (code, X86_ECX, 0, X86_EDX, 4);*/
+#ifdef WIN32
+	amd64_mov_reg_reg (code, AMD64_R14, AMD64_ARG_REG3, 8);
+#else
+	amd64_mov_reg_reg (code, AMD64_R12, AMD64_ARG_REG3, 8);
+#endif
 
 	/* state is already in rax */
 	amd64_jump_membase (code, cont_reg, MONO_STRUCT_OFFSET (MonoContinuation, return_ip));
 	g_assert ((code - start) <= kMaxCodeSize);
 
-	nacl_global_codeman_validate(&start, kMaxCodeSize, &code);
 	mono_arch_flush_icache (start, code - start);
 	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_EXCEPTION_HANDLING, NULL);
 
